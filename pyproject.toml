@@ -11,6 +11,7 @@ dependencies = [
     "vectorbt>=0.26.0",
     "alpaca-py>=0.21.0",
     "python-dotenv>=1.0.1",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -19,16 +20,15 @@ dev = [
 ]
 
 [tool.setuptools]
-# Keep packaging scoped to the app module so we don’t auto-discover sibling folders
-# like `backtesting` or `assets`.
-packages = []
+# Keep packaging explicit so we don't auto-discover sibling folders like `assets`.
+packages = ["tools"]
 py-modules = ["main"]
 
 [tool.uv]
 # Ensure uv treats this as the root of the environment when using `uv sync`.
 package = true
 [tool.pyright]
-include = ["main.py"]
+include = ["main.py", "tools"]
 typeCheckingMode = "basic"
 
 [dependency-groups]

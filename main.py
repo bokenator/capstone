@@ -9,6 +9,7 @@ can hydrate the widget.
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 from pathlib import Path
 from typing import Dict, List, cast
 
@@ -30,9 +31,10 @@ from tools import (
     Widget,
     WidgetInput,
     fetch_equity_prices,
+    format_result_text,
     get_widgets,
-    ma_crossover_backtest,
     resource_description,
+    run_backtest,
     tool_invocation_meta,
     tool_meta,
 )
@@ -78,7 +80,6 @@ async def _list_tools() -> List[types.Tool]:
                 "openai/outputTemplate": "ui://widget/equity-chart.html",
                 "openai/toolInvocation/invoking": "Fetching equity prices",
                 "openai/toolInvocation/invoked": "Fetched equity prices",
-                "openai/resultCanProduceWidget": True,
                 "openai/widgetAccessible": True,
             },
             annotations=types.ToolAnnotations(
@@ -91,19 +92,18 @@ async def _list_tools() -> List[types.Tool]:
     tools.append(
         types.Tool(
             name=BACKTEST_TOOL_NAME,
-            title="Backtest Strategy (MA Crossover)",
-            description="Run a moving-average crossover backtest over one or more symbols.",
+            title="Backtest (AI-Powered)",
+            description="Generate and run a custom trading strategy from natural language. Uses AI to create strategy code, then backtests it with vectorbt.",
             inputSchema=deepcopy(BACKTEST_TOOL_SCHEMA),
             _meta={
                 "openai/outputTemplate": "ui://widget/equity-chart.html",
-                "openai/toolInvocation/invoking": "Running backtest",
+                "openai/toolInvocation/invoking": "Generating and running strategy",
                 "openai/toolInvocation/invoked": "Backtest complete",
-                "openai/resultCanProduceWidget": True,
                 "openai/widgetAccessible": True,
             },
             annotations=types.ToolAnnotations(
                 destructiveHint=False,
-                openWorldHint=False,
+                openWorldHint=True,  # Uses external AI API
                 readOnlyHint=True,
             ),
         )
@@ -163,6 +163,7 @@ async def _handle_read_resource(req: types.ReadResourceRequest) -> types.ServerR
 
 
 async def _call_tool_request(req: types.CallToolRequest) -> types.ServerResult:
+    # Backtest (AI-powered)
     if req.params.name == BACKTEST_TOOL_NAME:
         arguments = req.params.arguments or {}
         try:
@@ -179,8 +180,9 @@ async def _call_tool_request(req: types.CallToolRequest) -> types.ServerResult:
                     isError=True,
                 )
             )
+
         try:
-            result = ma_crossover_backtest(payload)
+            result = run_backtest(payload)
         except Exception as exc:
             return types.ServerResult(
                 types.CallToolResult(
@@ -188,14 +190,29 @@ async def _call_tool_request(req: types.CallToolRequest) -> types.ServerResult:
                     isError=True,
                 )
             )
-        text = f"Backtest complete for {len(payload.symbols)} symbols; bars: {len(result['data'])}"
+
+        if not result.get("success", False):
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[types.TextContent(type="text", text=f"Backtest failed: {result.get('error', 'Unknown error')}")],
+                    structuredContent=result,
+                    isError=True,
+                    _meta={
+                        "openai/outputTemplate": "ui://widget/equity-chart.html",
+                        "openai/toolInvocation/invoking": "Generating and running strategy",
+                        "openai/toolInvocation/invoked": "Backtest failed",
+                    },
+                )
+            )
+
+        text = format_result_text(result)
         return types.ServerResult(
             types.CallToolResult(
                 content=[types.TextContent(type="text", text=text)],
                 structuredContent=result,
                 _meta={
                     "openai/outputTemplate": "ui://widget/equity-chart.html",
-                    "openai/toolInvocation/invoking": "Running backtest",
+                    "openai/toolInvocation/invoking": "Generating and running strategy",
                     "openai/toolInvocation/invoked": "Backtest complete",
                 },
             )
@@ -317,4 +334,6 @@ except Exception:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8090)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8090"))
+    uvicorn.run("main:app", host=host, port=port)

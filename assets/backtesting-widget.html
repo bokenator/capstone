@@ -62,14 +62,47 @@
       <div class="note" id="note-slot">No note provided yet.</div>
     </div>
     <script>
-      const params = new URLSearchParams(window.location.search);
-      const note = params.get("note");
-      if (note) {
-        document.getElementById("note-slot").textContent = note;
-        document.getElementById("status-pill").textContent = "Hydrated";
-        document.getElementById("status-pill").style.background = "#22c55e";
-        document.getElementById("status-pill").style.color = "#052e16";
+      const SET_GLOBALS_EVENT_TYPE = "openai:set_globals";
+
+      function resolveNote() {
+        const toolOutput = window.openai?.toolOutput;
+        if (!toolOutput || typeof toolOutput !== "object") {
+          return null;
+        }
+        const note = toolOutput.note;
+        return typeof note === "string" ? note : null;
       }
+
+      function render(note) {
+        const noteSlot = document.getElementById("note-slot");
+        const statusPill = document.getElementById("status-pill");
+        if (!noteSlot || !statusPill) return;
+
+        if (!note) {
+          noteSlot.textContent = "No note provided yet.";
+          statusPill.textContent = "Ready";
+          statusPill.style.background = "#1d4ed8";
+          statusPill.style.color = "#e0f2fe";
+          return;
+        }
+
+        noteSlot.textContent = note;
+        statusPill.textContent = "Hydrated";
+        statusPill.style.background = "#22c55e";
+        statusPill.style.color = "#052e16";
+      }
+
+      function hydrateFromHost() {
+        render(resolveNote());
+      }
+
+      window.addEventListener(
+        SET_GLOBALS_EVENT_TYPE,
+        () => hydrateFromHost(),
+        { passive: true }
+      );
+
+      hydrateFromHost();
     </script>
   </body>
 </html>

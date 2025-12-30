@@ -1,22 +1,36 @@
 """MCP Tools package."""
 
-from .backtest import (
-    BACKTEST_TOOL_NAME,
-    BACKTEST_TOOL_SCHEMA,
-    BacktestInput,
-    ma_crossover_backtest,
-)
 from .common import (
     TIMEFRAME_PARAMS,
     get_alpaca_credentials,
     parse_dt,
     resolve_timeframe,
 )
+from .backtest import (
+    BACKTEST_TOOL_NAME,
+    BACKTEST_TOOL_SCHEMA,
+    BacktestInput,
+    format_result_text,
+    run_backtest,
+)
 from .equity_prices import (
     EQUITY_TOOL_NAME,
     EQUITY_TOOL_SCHEMA,
     EquityPricesInput,
     fetch_equity_prices,
+)
+from .strategy_executor import (
+    BacktestMetrics,
+    BacktestResult,
+    ExecutionTimeout,
+    StrategyExecutor,
+    get_strategy_executor,
+)
+from .strategy_generator import (
+    CodexAgent,
+    CodexSession,
+    ExecutionResult,
+    get_codex_agent,
 )
 from .widgets import (
     MIME_TYPE,
@@ -41,11 +55,23 @@ __all__ = [
     "EQUITY_TOOL_SCHEMA",
     "EquityPricesInput",
     "fetch_equity_prices",
-    # Backtest
+    # Backtest (AI-powered)
     "BACKTEST_TOOL_NAME",
     "BACKTEST_TOOL_SCHEMA",
     "BacktestInput",
-    "ma_crossover_backtest",
+    "run_backtest",
+    "format_result_text",
+    # Strategy generator (Codex agent)
+    "CodexAgent",
+    "CodexSession",
+    "ExecutionResult",
+    "get_codex_agent",
+    # Strategy executor
+    "BacktestMetrics",
+    "BacktestResult",
+    "ExecutionTimeout",
+    "StrategyExecutor",
+    "get_strategy_executor",
     # Widgets
     "MIME_TYPE",
     "WIDGET_TOOL_SCHEMA",

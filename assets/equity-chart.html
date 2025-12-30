@@ -12,6 +12,11 @@
         --text: #e2e8f0;
         --muted: #94a3b8;
         --accent: #22c55e;
+        --red: #ef4444;
+        --blue: #3b82f6;
+        --purple: #a855f7;
+        --orange: #f97316;
+        --cyan: #06b6d4;
       }
       body {
         margin: 0;
@@ -36,6 +41,7 @@
         align-items: baseline;
         gap: 10px;
         margin-bottom: 12px;
+        flex-wrap: wrap;
       }
       .title {
         font-size: 20px;
@@ -50,9 +56,91 @@
         font-size: 12px;
         font-weight: 600;
       }
+      .badge.red {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--red);
+        border-color: rgba(239, 68, 68, 0.35);
+      }
       #chart {
         width: 100%;
         height: 420px;
+      }
+      .legend {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 8px;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 13px;
+      }
+      .legend-color {
+        width: 12px;
+        height: 3px;
+        border-radius: 2px;
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .metric-card {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .metric-label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+      }
+      .metric-value {
+        font-size: 18px;
+        font-weight: 600;
+      }
+      .metric-value.positive {
+        color: var(--accent);
+      }
+      .metric-value.negative {
+        color: var(--red);
+      }
+      .symbol-metrics {
+        margin-top: 16px;
+      }
+      .symbol-metrics h4 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .symbol-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 8px;
+        margin-bottom: 6px;
+      }
+      .symbol-name {
+        font-weight: 600;
+        min-width: 60px;
+      }
+      .symbol-stat {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .symbol-stat strong {
+        color: var(--text);
       }
       .meta {
         display: flex;
@@ -85,6 +173,9 @@
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 8px 10px;
+        font-size: 12px;
+        max-height: 200px;
+        overflow-y: auto;
       }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
@@ -96,6 +187,8 @@
     <script>
       const { useEffect, useRef, useState, useSyncExternalStore } = React;
       const SET_GLOBALS_EVENT_TYPE = "openai:set_globals";
+
+      const COLORS = ["#22c55e", "#3b82f6", "#a855f7", "#f97316", "#06b6d4", "#ec4899"];
 
       function useOpenAiGlobal(key) {
         return useSyncExternalStore(
@@ -126,19 +219,37 @@
       }
 
       function normalizePayload(raw) {
-        if (!raw || !Array.isArray(raw.data)) return null;
-        const bars = raw.data.map((d) => ({
+        if (!raw) return null;
+
+        // Check for multi-symbol equity_curves
+        if (raw.equity_curves && Object.keys(raw.equity_curves).length > 0) {
+          const curves = {};
+          for (const [symbol, data] of Object.entries(raw.equity_curves)) {
+            curves[symbol] = data.map((d) => ({
+              time: Math.floor(new Date(d.timestamp).getTime() / 1000),
+              value: Number(d.value),
+            }));
+          }
+          return { ...raw, multiCurves: curves };
+        }
+
+        // Fallback to single curve from data array
+        if (!Array.isArray(raw.data)) return null;
+        const lineData = raw.data.map((d) => ({
           time: Math.floor(new Date(d.timestamp).getTime() / 1000),
-          open: Number(d.open),
-          high: Number(d.high),
-          low: Number(d.low),
-          close: Number(d.close),
+          value: Number(d.close),
         }));
-        const vols = raw.data.map((d) => ({
-          time: Math.floor(new Date(d.timestamp).getTime() / 1000),
-          value: Number(d.volume),
-        }));
-        return { ...raw, bars, vols };
+        return { ...raw, lineData };
+      }
+
+      function formatPercent(val) {
+        if (val == null || isNaN(val)) return "—";
+        return (val * 100).toFixed(2) + "%";
+      }
+
+      function formatNumber(val, decimals = 2) {
+        if (val == null || isNaN(val)) return "—";
+        return Number(val).toFixed(decimals);
       }
 
       function App() {
@@ -146,8 +257,7 @@
         const toolResponseMetadata = useOpenAiGlobal("toolResponseMetadata");
         const chartRef = useRef(null);
         const chartApiRef = useRef(null);
-        const candleSeriesRef = useRef(null);
-        const volSeriesRef = useRef(null);
+        const seriesRefs = useRef({});
         const [state, setState] = useState(() => {
           const candidate = toolOutput ?? parseQueryPayload();
           return {
@@ -175,40 +285,69 @@
             timeScale: { borderColor: "#1f2937" },
             rightPriceScale: { borderColor: "#1f2937" },
           });
-          const candle = chart.addCandlestickSeries({
-            upColor: "#22c55e",
-            downColor: "#ef4444",
-            borderDownColor: "#ef4444",
-            borderUpColor: "#22c55e",
-            wickDownColor: "#ef4444",
-            wickUpColor: "#22c55e",
-          });
-          const vol = chart.addHistogramSeries({
-            color: "#93c5fd",
-            priceFormat: { type: "volume" },
-            priceScaleId: "vol",
-          });
-          chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } });
           chartApiRef.current = chart;
-          candleSeriesRef.current = candle;
-          volSeriesRef.current = vol;
         }, []);
 
         useEffect(() => {
-          if (!state.normalizedPayload || !candleSeriesRef.current || !volSeriesRef.current) return;
-          candleSeriesRef.current.setData(state.normalizedPayload.bars);
-          volSeriesRef.current.setData(state.normalizedPayload.vols);
+          if (!state.normalizedPayload || !chartApiRef.current) return;
+
+          const chart = chartApiRef.current;
+          const payload = state.normalizedPayload;
+
+          // Clear existing series
+          Object.values(seriesRefs.current).forEach((s) => {
+            try { chart.removeSeries(s); } catch (e) {}
+          });
+          seriesRefs.current = {};
+
+          // Multi-curve mode
+          if (payload.multiCurves) {
+            const symbols = Object.keys(payload.multiCurves);
+            symbols.forEach((symbol, i) => {
+              const color = COLORS[i % COLORS.length];
+              const series = chart.addLineSeries({
+                color,
+                lineWidth: 2,
+                crosshairMarkerVisible: true,
+                crosshairMarkerRadius: 4,
+                title: symbol,
+              });
+              series.setData(payload.multiCurves[symbol]);
+              seriesRefs.current[symbol] = series;
+            });
+          } else if (payload.lineData) {
+            // Single curve fallback
+            const series = chart.addLineSeries({
+              color: "#22c55e",
+              lineWidth: 2,
+              crosshairMarkerVisible: true,
+              crosshairMarkerRadius: 4,
+            });
+            series.setData(payload.lineData);
+            seriesRefs.current["main"] = series;
+          }
+
+          chart.timeScale().fitContent();
         }, [state]);
 
-        const rows = state.normalizedPayload ? state.normalizedPayload.data.slice(0, 10) : [];
+        const payload = state.normalizedPayload;
+        const metrics = payload?.metrics || {};
+        const metricsBySymbol = payload?.metrics_by_symbol || {};
+        const symbols = payload?.symbols || [];
+        const hasMultiCurves = payload?.multiCurves && Object.keys(payload.multiCurves).length > 0;
+
+        const rows = payload && payload.data ? payload.data.slice(0, 10) : [];
         const dateRange =
-          state.normalizedPayload && state.normalizedPayload.data.length > 1
-            ? `${new Date(state.normalizedPayload.data[0].timestamp).toISOString().slice(0, 10)} → ${new Date(
-                state.normalizedPayload.data[state.normalizedPayload.data.length - 1].timestamp
+          payload && payload.data && payload.data.length > 1
+            ? `${new Date(payload.data[0].timestamp).toISOString().slice(0, 10)} → ${new Date(
+                payload.data[payload.data.length - 1].timestamp
               )
                 .toISOString()
                 .slice(0, 10)}`
             : "n/a";
+
+        const totalReturn = metrics.total_return || 0;
+        const isPositive = totalReturn >= 0;
 
         const logDebug = () => {
           console.log("[equity-chart] debug", {
@@ -228,42 +367,149 @@
             React.createElement(
               "div",
               { className: "header" },
-              React.createElement("div", { className: "title" }, state.normalizedPayload?.symbol || "Equity Chart"),
-              React.createElement("span", { className: "badge" }, state.normalizedPayload?.timeframe || "—")
+              React.createElement("div", { className: "title" }, payload?.symbol || "Equity Chart"),
+              React.createElement("span", { className: "badge" }, payload?.timeframe || "—")
             ),
             React.createElement("div", { id: "chart", ref: chartRef }),
-            state.normalizedPayload
+
+            // Legend for multi-curve
+            hasMultiCurves && React.createElement(
+              "div",
+              { className: "legend" },
+              symbols.map((symbol, i) =>
+                React.createElement(
+                  "div",
+                  { className: "legend-item", key: symbol },
+                  React.createElement("div", {
+                    className: "legend-color",
+                    style: { backgroundColor: COLORS[i % COLORS.length] }
+                  }),
+                  React.createElement("span", null, symbol)
+                )
+              )
+            ),
+
+            payload
               ? React.createElement(
                   React.Fragment,
                   null,
+
+                  // Per-symbol metrics
+                  hasMultiCurves && Object.keys(metricsBySymbol).length > 0 && React.createElement(
+                    "div",
+                    { className: "symbol-metrics" },
+                    React.createElement("h4", null, "Performance by Symbol"),
+                    symbols.map((symbol, i) => {
+                      const m = metricsBySymbol[symbol] || {};
+                      const ret = m.total_return || 0;
+                      return React.createElement(
+                        "div",
+                        { className: "symbol-row", key: symbol },
+                        React.createElement(
+                          "div",
+                          { className: "symbol-name", style: { color: COLORS[i % COLORS.length] } },
+                          symbol
+                        ),
+                        React.createElement(
+                          "div",
+                          { className: "symbol-stat" },
+                          React.createElement("strong", { style: { color: ret >= 0 ? "#22c55e" : "#ef4444" } }, formatPercent(ret)),
+                          " return"
+                        ),
+                        React.createElement(
+                          "div",
+                          { className: "symbol-stat" },
+                          React.createElement("strong", null, m.num_trades ?? "—"),
+                          " trades"
+                        ),
+                        React.createElement(
+                          "div",
+                          { className: "symbol-stat" },
+                          "Sharpe: ",
+                          React.createElement("strong", null, formatNumber(m.sharpe_ratio))
+                        ),
+                        React.createElement(
+                          "div",
+                          { className: "symbol-stat" },
+                          "MaxDD: ",
+                          React.createElement("strong", { style: { color: "#ef4444" } }, formatPercent(m.max_drawdown))
+                        )
+                      );
+                    })
+                  ),
+
+                  // Overall metrics grid (show first symbol or combined)
+                  !hasMultiCurves && React.createElement(
+                    "div",
+                    { className: "metrics-grid" },
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Entry Signals"),
+                      React.createElement("div", { className: "metric-value" }, metrics.entry_signals ?? "—")
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Exit Signals"),
+                      React.createElement("div", { className: "metric-value" }, metrics.exit_signals ?? "—")
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Trades"),
+                      React.createElement("div", { className: "metric-value" }, metrics.num_trades ?? "—")
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Win Rate"),
+                      React.createElement("div", { className: "metric-value" }, formatPercent(metrics.win_rate))
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Total Return"),
+                      React.createElement(
+                        "div",
+                        { className: "metric-value " + (totalReturn >= 0 ? "positive" : "negative") },
+                        formatPercent(totalReturn)
+                      )
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Sharpe Ratio"),
+                      React.createElement("div", { className: "metric-value" }, formatNumber(metrics.sharpe_ratio))
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Max Drawdown"),
+                      React.createElement(
+                        "div",
+                        { className: "metric-value negative" },
+                        formatPercent(metrics.max_drawdown)
+                      )
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "metric-card" },
+                      React.createElement("div", { className: "metric-label" }, "Profit Factor"),
+                      React.createElement("div", { className: "metric-value" }, formatNumber(metrics.profit_factor))
+                    )
+                  ),
+
                   React.createElement(
                     "div",
                     { className: "meta" },
-                    React.createElement("div", null, React.createElement("strong", null, "Symbol:"), " ", state.normalizedPayload.symbol),
-                    React.createElement("div", null, React.createElement("strong", null, "Timeframe:"), " ", state.normalizedPayload.timeframe),
-                    React.createElement("div", null, React.createElement("strong", null, "Bars:"), " ", state.normalizedPayload.data.length),
+                    React.createElement("div", null, React.createElement("strong", null, "Symbols:"), " ", payload.symbol || symbols.join(", ")),
+                    React.createElement("div", null, React.createElement("strong", null, "Timeframe:"), " ", payload.timeframe),
+                    payload.data && React.createElement("div", null, React.createElement("strong", null, "Bars:"), " ", payload.data.length),
                     React.createElement("div", null, React.createElement("strong", null, "Range:"), " ", dateRange)
-                  ),
-                  React.createElement("div", { className: "notice" }, "First 10 bars (text plus chart above):"),
-                  React.createElement(
-                    "div",
-                    { className: "rows" },
-                    rows.map((r, i) =>
-                      React.createElement(
-                        "div",
-                        { key: i },
-                        `${r.timestamp} | O:${r.open} H:${r.high} L:${r.low} C:${r.close} V:${r.volume}`
-                      )
-                    )
                   )
                 )
               : React.createElement("div", { className: "empty" }, "No data provided.")
-          ),
-          React.createElement(
-            "div",
-            { className: "notice" },
-            "Expected structured content: { symbol, timeframe, data: [{ timestamp, open, high, low, close, volume }] } ",
-            "(source: ", state.source, ")"
           ),
           React.createElement(
             "div",
