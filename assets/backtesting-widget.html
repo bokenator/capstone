@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Backtesting Widget</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        margin: 0;
+        padding: 2rem;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1f2937;
+        border-radius: 12px;
+        padding: 1.5rem;
+        max-width: 640px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+      h1 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 0 1.25rem 0;
+      }
+      .pill {
+        display: inline-block;
+        padding: 0.35rem 0.75rem;
+        margin-right: 0.5rem;
+        border-radius: 999px;
+        background: #1d4ed8;
+        color: #e0f2fe;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .note {
+        display: inline-block;
+        margin-top: 0.75rem;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        background: #0b1220;
+        border: 1px solid #1f2937;
+        min-width: 50%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Backtesting Widget</h1>
+      <p>
+        This widget is served by the FastMCP demo server. It expects structured content with
+        a <code>note</code> field that will be injected into the UI.
+      </p>
+      <div>
+        <span class="pill" id="status-pill">Ready</span>
+        <span class="pill">FastMCP</span>
+        <span class="pill">uv</span>
+      </div>
+      <div class="note" id="note-slot">No note provided yet.</div>
+    </div>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const note = params.get("note");
+      if (note) {
+        document.getElementById("note-slot").textContent = note;
+        document.getElementById("status-pill").textContent = "Hydrated";
+        document.getElementById("status-pill").style.background = "#22c55e";
+        document.getElementById("status-pill").style.color = "#052e16";
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Equity Chart (React + Lightweight Charts)</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #0f172a;
+        --border: #1f2937;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #22c55e;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+      }
+      .card {
+        background: linear-gradient(180deg, #0f172a 0%, #0b1220 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+      }
+      .header {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .title {
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .badge {
+        background: rgba(34, 197, 94, 0.15);
+        color: var(--accent);
+        border: 1px solid rgba(34, 197, 94, 0.35);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      #chart {
+        width: 100%;
+        height: 420px;
+      }
+      .meta {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 10px;
+      }
+      .meta strong {
+        color: var(--text);
+      }
+      .notice {
+        margin-top: 12px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .empty {
+        color: #f87171;
+        margin-top: 8px;
+      }
+      .rows {
+        font-family: monospace;
+        white-space: pre-wrap;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const { useEffect, useRef, useState, useSyncExternalStore } = React;
+      const SET_GLOBALS_EVENT_TYPE = "openai:set_globals";
+
+      function useOpenAiGlobal(key) {
+        return useSyncExternalStore(
+          (onChange) => {
+            const handler = (event) => {
+              if (event.detail?.globals?.hasOwnProperty(key)) {
+                onChange();
+              }
+            };
+            window.addEventListener(SET_GLOBALS_EVENT_TYPE, handler, { passive: true });
+            return () => window.removeEventListener(SET_GLOBALS_EVENT_TYPE, handler);
+          },
+          () => (window.openai ? window.openai[key] ?? null : null),
+          () => null
+        );
+      }
+
+      function parseQueryPayload() {
+        const params = new URLSearchParams(window.location.search);
+        const raw = params.get("structuredContent") || params.get("data");
+        if (!raw) return null;
+        try {
+          return JSON.parse(decodeURIComponent(raw));
+        } catch (e) {
+          console.warn("[equity-chart] failed to parse query payload", e);
+          return null;
+        }
+      }
+
+      function normalizePayload(raw) {
+        if (!raw || !Array.isArray(raw.data)) return null;
+        const bars = raw.data.map((d) => ({
+          time: Math.floor(new Date(d.timestamp).getTime() / 1000),
+          open: Number(d.open),
+          high: Number(d.high),
+          low: Number(d.low),
+          close: Number(d.close),
+        }));
+        const vols = raw.data.map((d) => ({
+          time: Math.floor(new Date(d.timestamp).getTime() / 1000),
+          value: Number(d.volume),
+        }));
+        return { ...raw, bars, vols };
+      }
+
+      function App() {
+        const toolOutput = useOpenAiGlobal("toolOutput");
+        const toolResponseMetadata = useOpenAiGlobal("toolResponseMetadata");
+        const chartRef = useRef(null);
+        const chartApiRef = useRef(null);
+        const candleSeriesRef = useRef(null);
+        const volSeriesRef = useRef(null);
+        const [state, setState] = useState(() => {
+          const candidate = toolOutput ?? parseQueryPayload();
+          return {
+            normalizedPayload: normalizePayload(candidate),
+            source: candidate ? (toolOutput ? "toolOutput" : "query") : "none",
+          };
+        });
+
+        useEffect(() => {
+          const candidate = toolOutput ?? parseQueryPayload();
+          setState({
+            normalizedPayload: normalizePayload(candidate),
+            source: candidate ? (toolOutput ? "toolOutput" : "query") : "none",
+          });
+        }, [toolOutput]);
+
+        useEffect(() => {
+          const container = chartRef.current;
+          if (!container || chartApiRef.current) return;
+          const LW = window.LightweightCharts;
+          const chart = LW.createChart(container, {
+            layout: { background: { color: "#0b1220" }, textColor: "#e2e8f0" },
+            grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+            crosshair: { mode: LW.CrosshairMode.Normal },
+            timeScale: { borderColor: "#1f2937" },
+            rightPriceScale: { borderColor: "#1f2937" },
+          });
+          const candle = chart.addCandlestickSeries({
+            upColor: "#22c55e",
+            downColor: "#ef4444",
+            borderDownColor: "#ef4444",
+            borderUpColor: "#22c55e",
+            wickDownColor: "#ef4444",
+            wickUpColor: "#22c55e",
+          });
+          const vol = chart.addHistogramSeries({
+            color: "#93c5fd",
+            priceFormat: { type: "volume" },
+            priceScaleId: "vol",
+          });
+          chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.75, bottom: 0 } });
+          chartApiRef.current = chart;
+          candleSeriesRef.current = candle;
+          volSeriesRef.current = vol;
+        }, []);
+
+        useEffect(() => {
+          if (!state.normalizedPayload || !candleSeriesRef.current || !volSeriesRef.current) return;
+          candleSeriesRef.current.setData(state.normalizedPayload.bars);
+          volSeriesRef.current.setData(state.normalizedPayload.vols);
+        }, [state]);
+
+        const rows = state.normalizedPayload ? state.normalizedPayload.data.slice(0, 10) : [];
+        const dateRange =
+          state.normalizedPayload && state.normalizedPayload.data.length > 1
+            ? `${new Date(state.normalizedPayload.data[0].timestamp).toISOString().slice(0, 10)} → ${new Date(
+                state.normalizedPayload.data[state.normalizedPayload.data.length - 1].timestamp
+              )
+                .toISOString()
+                .slice(0, 10)}`
+            : "n/a";
+
+        const logDebug = () => {
+          console.log("[equity-chart] debug", {
+            toolOutput,
+            toolResponseMetadata,
+            source: state.source,
+            payload: state.normalizedPayload,
+          });
+        };
+
+        return React.createElement(
+          "div",
+          { className: "wrap" },
+          React.createElement(
+            "div",
+            { className: "card" },
+            React.createElement(
+              "div",
+              { className: "header" },
+              React.createElement("div", { className: "title" }, state.normalizedPayload?.symbol || "Equity Chart"),
+              React.createElement("span", { className: "badge" }, state.normalizedPayload?.timeframe || "—")
+            ),
+            React.createElement("div", { id: "chart", ref: chartRef }),
+            state.normalizedPayload
+              ? React.createElement(
+                  React.Fragment,
+                  null,
+                  React.createElement(
+                    "div",
+                    { className: "meta" },
+                    React.createElement("div", null, React.createElement("strong", null, "Symbol:"), " ", state.normalizedPayload.symbol),
+                    React.createElement("div", null, React.createElement("strong", null, "Timeframe:"), " ", state.normalizedPayload.timeframe),
+                    React.createElement("div", null, React.createElement("strong", null, "Bars:"), " ", state.normalizedPayload.data.length),
+                    React.createElement("div", null, React.createElement("strong", null, "Range:"), " ", dateRange)
+                  ),
+                  React.createElement("div", { className: "notice" }, "First 10 bars (text plus chart above):"),
+                  React.createElement(
+                    "div",
+                    { className: "rows" },
+                    rows.map((r, i) =>
+                      React.createElement(
+                        "div",
+                        { key: i },
+                        `${r.timestamp} | O:${r.open} H:${r.high} L:${r.low} C:${r.close} V:${r.volume}`
+                      )
+                    )
+                  )
+                )
+              : React.createElement("div", { className: "empty" }, "No data provided.")
+          ),
+          React.createElement(
+            "div",
+            { className: "notice" },
+            "Expected structured content: { symbol, timeframe, data: [{ timestamp, open, high, low, close, volume }] } ",
+            "(source: ", state.source, ")"
+          ),
+          React.createElement(
+            "div",
+            { className: "notice" },
+            React.createElement(
+              "button",
+              { onClick: logDebug, style: { padding: "8px 12px", borderRadius: "8px" } },
+              "Print debug to console"
+            )
+          )
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+    </script>
+  </body>
+</html>

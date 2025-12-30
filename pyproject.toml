@@ -1,0 +1,38 @@
+[project]
+name = "mcp-server"
+version = "0.0.1"
+description = "Example MCP server built with the FastMCP helper"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "mcp[fastapi]>=0.1.0",
+    "uvicorn>=0.30.0",
+    "vectorbt>=0.26.0",
+    "alpaca-py>=0.21.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools]
+# Keep packaging scoped to the app module so we don’t auto-discover sibling folders
+# like `backtesting` or `assets`.
+packages = []
+py-modules = ["main"]
+
+[tool.uv]
+# Ensure uv treats this as the root of the environment when using `uv sync`.
+package = true
+[tool.pyright]
+include = ["main.py"]
+typeCheckingMode = "basic"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.407",
+    "ruff>=0.14.10",
+]
