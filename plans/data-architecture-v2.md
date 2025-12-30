@@ -4,17 +4,20 @@
 
 ## Decision Summary
 
-| # | Decision | Options | Status |
-|---|----------|---------|--------|
-| 1 | Symbol Handling | A: Placeholder, B: Explicit, C: Injected, D: Hybrid | UNDECIDED |
-| 2 | Primary Data / Signal Alignment | A: Flag in requirements, B: STRATEGY_CONFIG, C: Convention, D: Infer | UNDECIDED |
-| 3 | Parsing Generated Code | A: Execute, B: AST, C: Regex, D: Structured LLM output | UNDECIDED |
-| 4 | Multi-Symbol Strategy Support | A: Single only, B: Multi mode, C: Always multi | UNDECIDED |
-| 5 | Parameter Schema | A: Simple dict, B: Schema with bounds, C: Pydantic | UNDECIDED |
-| 6 | Error Handling (Data Fetch) | A: Fail fast, B: Skip/warn, C: Codex feedback, D: Fallback | UNDECIDED |
-| 7 | Caching Strategy | A: None, B: In-memory, C: Persistent, D: Hybrid | UNDECIDED |
-| 8 | Fundamental Data Provider | A: Alpha Vantage, B: Polygon, C: FMP, D: Yahoo, E: Multiple | UNDECIDED |
-| 9 | Execution Price | A: Always close, B: Configurable, C: Next open | UNDECIDED |
+All major decisions have been made. See **Decided** section below.
+
+> **Note:** Execution frequency and price are configured via built-in parameters in PARAM_SCHEMA. All data sources are resampled to the `execution_frequency` before being passed to the strategy.
+
+> **Decided:**
+> - **LLM Output Format**: Structured JSON output with separate `data_schema`, `param_schema`, and `code` fields. No parsing of Python code needed.
+> - **DATA_SCHEMA** uses rich structure (frequency, columns, description). No `resample` field - resampling is controlled globally.
+> - **PARAM_SCHEMA** always includes two built-in parameters: `execution_frequency` (enum: 1Min, 5Min, 1Hour, 1Day, 1Week, 1Month) and `execution_price` (enum: open, close). All data is resampled to `execution_frequency` before being passed to the strategy.
+> - **Symbol Handling**: Symbols are NEVER in DATA_SCHEMA. DATA_SCHEMA defines data slots (e.g., `prices`, `asset_a`, `asset_b`). Symbols are always injected at runtime, making strategies reusable across different symbols.
+> - **Multi-Symbol Support**: Naturally handled by DATA_SCHEMA slots. A pairs strategy defines `asset_a` and `asset_b` slots; runtime maps them to actual symbols (e.g., SPY, QQQ). Same logic works for any pair.
+> - **Symbol Extraction**: ChatGPT extracts symbols from user prompts and passes them separately from the strategy logic. Symbol changes don't require code regeneration.
+> - **Error Handling**: Fail fast with structured ERROR_SCHEMA. Errors are returned to the widget for user-friendly visualization.
+> - **Caching**: No caching for now. Fetch fresh data on every request. Caching can be added later if needed.
+> - **Fundamental Data Provider**: Financial Modeling Prep (FMP) for earnings, balance sheet, and other fundamental data.
 
 ## Overview
 
@@ -25,83 +28,360 @@ This document outlines the architecture for a flexible, agentic backtesting syst
 ## Core Principles
 
 1. **Data is data** - No distinction between "price data" and "fundamental data". Everything is a time-indexed DataFrame.
-2. **Declarative dependencies** - Generated strategy code declares what data it needs via `DATA_REQUIREMENTS`.
-3. **Agentic orchestration** - The orchestrator parses requirements and dispatches to appropriate data providers.
-4. **Separation of concerns** - Logic, parameters, and data requirements are all independently modifiable.
+2. **Schema/Instance separation** - Strategies define schemas (shape/constraints), runtime provides instances (specific values).
+3. **Agentic orchestration** - The orchestrator validates instances against schemas and dispatches to appropriate data providers.
+4. **Separation of concerns** - Logic, data schema, and param schema are independently modifiable.
+
+## Conversation Flow
+
+This section illustrates how user prompts flow through the system, demonstrating the separation between strategy logic and runtime parameters.
+
+### Example 1: Creating a New Strategy
+
+**User:** "Create a MA crossover strategy with SPY"
+
+ChatGPT parses this prompt and extracts:
+- **Strategy logic:** MA crossover (needs code generation)
+- **Symbol:** SPY (runtime parameter)
+
+ChatGPT calls the backtest tool:
+```python
+backtest(
+    prompt="MA crossover strategy",      # sent to Codex for code generation
+    symbols={"prices": "SPY"},           # runtime parameter, NOT sent to Codex
+)
+```
+
+Codex generates a **generic, symbol-agnostic** strategy:
+```json
+{
+  "data_schema": {
+    "prices": {"frequency": "1Day", "columns": ["close"]}
+  },
+  "param_schema": {
+    "fast_window": {"type": "int", "default": 10},
+    "slow_window": {"type": "int", "default": 30}
+  },
+  "code": "def generate_signals(data, params): ..."
+}
+```
+
+Orchestrator:
+1. Maps `symbols={"prices": "SPY"}` to DATA_SCHEMA slots
+2. Fetches SPY data from provider
+3. Runs backtest with default params
+
+### Example 2: Changing Symbol (No Code Regeneration)
+
+**User:** "Show me what this looks like with QQQ instead"
+
+ChatGPT recognizes this is a **symbol change only** - no logic change needed.
+
+ChatGPT calls the backtest tool with **same code**, different symbol:
+```python
+backtest(
+    base_code=<previous strategy code>,   # reuse existing
+    symbols={"prices": "QQQ"},            # only this changes
+)
+```
+
+Orchestrator:
+1. Skips code generation (base_code provided)
+2. Fetches QQQ data
+3. Runs backtest
+
+**Result:** Same strategy logic, different data, no LLM call needed.
+
+### Example 3: Changing Parameters (No Code Regeneration)
+
+**User:** "Try with a 20-period fast MA instead"
+
+ChatGPT recognizes this is a **parameter change** - no logic change needed.
+
+```python
+backtest(
+    base_code=<previous strategy code>,   # reuse existing
+    symbols={"prices": "QQQ"},            # keep current symbol
+    params={"fast_window": 20},           # override default
+)
+```
+
+**Result:** Same code, same data schema, just different param values.
+
+### Example 4: Changing Logic (Code Regeneration Required)
+
+**User:** "Actually, let's use RSI instead of MA crossover"
+
+ChatGPT recognizes this requires **new strategy logic**.
+
+```python
+backtest(
+    prompt="RSI strategy",                # new logic, needs Codex
+    symbols={"prices": "QQQ"},            # keep current symbol
+)
+```
+
+Codex generates new DATA_SCHEMA, PARAM_SCHEMA, and code for RSI strategy.
+
+### Summary: What Triggers Code Regeneration?
+
+| User Request | Code Regeneration? | What Changes |
+|--------------|-------------------|--------------|
+| "Create X strategy with SPY" | ✅ Yes | New strategy |
+| "Try QQQ instead" | ❌ No | Only symbols |
+| "Use 20-period MA" | ❌ No | Only params |
+| "Add a stop-loss" | ✅ Yes | Logic change |
+| "Switch to RSI strategy" | ✅ Yes | New strategy |
+
+## Schema vs Instance Model
+
+The architecture separates **schemas** (abstract shape/constraints) from **instances** (concrete values):
+
+| Component | Schema (Shape) | Instance (Values) |
+|-----------|---------------|-------------------|
+| **Data** | DATA_SCHEMA - what data structure the strategy expects | DATA_PARAMS - specific providers, symbols, timeframes |
+| **Parameters** | PARAM_SCHEMA - parameter types, bounds, descriptions | params - specific values (defaults extracted from PARAM_SCHEMA) |
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         STRATEGY DEFINITION                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  DATA_SCHEMA                          PARAM_SCHEMA                       │
+│  ┌─────────────────────────┐         ┌─────────────────────────┐        │
+│  │ "prices": {             │         │ "pe_threshold": {       │        │
+│  │   frequency: "1Day",    │         │   type: "float",        │        │
+│  │   columns: [ohlcv]      │         │   min: 0, max: 100,     │        │
+│  │ },                      │         │   default: 15           │        │
+│  │ "earnings": {           │         │ },                      │        │
+│  │   frequency: "quarterly"│         │ "ma_window": {          │        │
+│  │   columns: [eps]        │         │   type: "int",          │        │
+│  │ }                       │         │   min: 1, max: 500      │        │
+│  │                         │         │ }                       │        │
+│  │                         │         └─────────────────────────┘        │
+│  └─────────────────────────┘                     │                       │
+│              │                           (validated against)             │
+│              │                                   │                       │
+│      (validated against)                         ▼                       │
+│              │                       params (instance)                   │
+│              ▼                       ┌─────────────────────────┐        │
+│  DATA_PARAMS (instance)              │ pe_threshold: 15        │        │
+│  ┌─────────────────────────┐         │ ma_window: 20           │        │
+│  │ provider: "alpaca"      │         │                         │        │
+│  │ symbol: "SPY"           │         └─────────────────────────┘        │
+│  │ timeframe: "1Day"       │                                             │
+│  └─────────────────────────┘                                             │
+│                                                                          │
+│  STRATEGY_CODE (logic that uses data and params)                         │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │ def generate_signals(data: dict, params: dict):             │        │
+│  │     # all data resampled to same frequency before this call │        │
+│  │     ...                                                     │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Resampling and Execution Frequency
+
+The `execution_frequency` parameter (in PARAM_SCHEMA) controls how often the strategy runs. All data sources are resampled to this frequency:
+
+- DATA_SCHEMA specifies `frequency` - what to fetch from the provider
+- PARAM_SCHEMA specifies `execution_frequency` - what to resample to
+
+The orchestrator:
+1. Fetches each data series at its `frequency`
+2. Resamples all data to `execution_frequency` (upsample with ffill, or downsample with aggregation)
+3. Passes aligned data to `generate_signals()`
+
+```
+Example: Daily execution with quarterly fundamentals
+
+DATA_SCHEMA:
+  prices:   frequency="1Day"       → no change (already daily)
+  earnings: frequency="quarterly"  → forward-fill to daily
+
+PARAM_SCHEMA:
+  execution_frequency: "1Day"
+
+Quarterly EPS:      Q1────────────────Q2────────────────Q3
+                     │                 │                 │
+                     ▼ (forward-fill)  ▼                 ▼
+Daily (resampled): D1 D2 D3 D4 ... D60 D61 D62 ... D120 D121 ...
+
+
+Example: Weekly rebalancing with daily data
+
+DATA_SCHEMA:
+  prices:   frequency="1Day"       → downsample to weekly (last)
+  earnings: frequency="quarterly"  → forward-fill to weekly
+
+PARAM_SCHEMA:
+  execution_frequency: "1Week"
+
+Daily prices:      D1 D2 D3 D4 D5 D6 D7 D8 D9 ...
+                                  │           │
+                                  ▼ (last)    ▼
+Weekly (resampled):              W1          W2
+```
+
+### Benefits of Schema/Instance Separation
+
+| Benefit | Description |
+|---------|-------------|
+| **Reusability** | Same strategy (schema + code) works for any symbol |
+| **Validation** | Orchestrator validates instances against schemas before execution |
+| **Swappable data sources** | Change provider without touching strategy code |
+| **UI generation** | Auto-generate forms from PARAM_SCHEMA |
+| **Parameter optimization** | PARAM_SCHEMA provides bounds for grid search |
+| **Documentation** | Schemas include descriptions for each field |
 
 ## Architecture Flow
 
 ```
-┌─────────────────┐
-│  User Prompt    │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  CodexAgent     │  → Generates code with DATA_REQUIREMENTS + PARAMS + logic
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  Orchestrator   │  → Parses DATA_REQUIREMENTS from generated code (via AST)
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  Data Agents    │  → Alpaca, Alpha Vantage, etc. fetch required data
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  Executor       │  → Passes data dict + params into generate_signals()
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  vectorbt       │  → Runs backtest with signals
-└─────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           USER REQUEST                                   │
+│  "Create a PE ratio strategy" + symbols: ["SPY", "AAPL"]                │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           CODEX AGENT                                    │
+│  Generates STRATEGY DEFINITION:                                          │
+│  - DATA_SCHEMA (what data shape is needed)                              │
+│  - PARAM_SCHEMA (what parameters exist, with bounds)                    │
+│  - STRATEGY_CODE (the logic)                                            │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           CODEX AGENT (or separate call)                 │
+│  Generates DATA_PARAMS based on:                                         │
+│  - DATA_SCHEMA (what's needed)                                          │
+│  - User's symbols (SPY, AAPL)                                           │
+│  - Available providers                                                   │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           ORCHESTRATOR                                   │
+│  1. Validate DATA_PARAMS against DATA_SCHEMA                            │
+│  2. Validate params against PARAM_SCHEMA                                │
+│  3. Fetch data from providers based on DATA_PARAMS                      │
+│  4. Extract defaults from PARAM_SCHEMA, merge with user overrides       │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           DATA PROVIDERS                                 │
+│  Alpaca (prices), FMP (fundamentals), Yahoo (fallback)                  │
+│  Each fetches data according to DATA_PARAMS                             │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           EXECUTOR                                       │
+│  generate_signals(data, params) → (entries, exits)                      │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           VECTORBT                                       │
+│  Portfolio.from_signals() → backtest results                            │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Generated Code Structure
 
+A strategy definition consists of three parts generated by the LLM:
+
+### 1. DATA_SCHEMA (Data Requirements)
+
+Defines what data the strategy needs. The orchestrator fetches at `frequency` and resamples to `execution_frequency` (from PARAM_SCHEMA):
+
 ```python
-# Strategy configuration
-STRATEGY_CONFIG = {
-    "mode": "single_symbol",  # or "multi_symbol"
-    "primary_data": "prices",  # which data series signals align with
-}
-
-# Data requirements - declarative dependencies
-DATA_REQUIREMENTS = [
-    {
-        "name": "prices",
-        "provider": "alpaca",
-        "type": "ohlcv",
-        "timeframe": "1Day",
+DATA_SCHEMA = {
+    "prices": {
+        "frequency": "1Day",       # raw data frequency to fetch
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "Daily OHLCV price data",
     },
-    {
-        "name": "earnings",
-        "provider": "alpha_vantage",
-        "type": "quarterly_earnings",
-        "fields": ["eps"],
+    "earnings": {
+        "frequency": "quarterly",  # raw data frequency to fetch (will be resampled)
+        "columns": ["eps"],
+        "description": "Quarterly earnings per share",
     },
-]
-
-# Default parameters (overridable at runtime)
-DEFAULT_PARAMS = {
-    "pe_threshold": 15,
-    "pe_exit": 25,
 }
+```
 
+**Fields:**
+- `frequency`: What frequency to fetch from the data provider
+- `columns`: Required columns in the DataFrame
+- `description`: Human-readable description
+
+**Note:** All data sources are resampled to `execution_frequency` (from PARAM_SCHEMA) before being passed to the strategy. Lower-frequency data (e.g., quarterly) is forward-filled; higher-frequency data is downsampled.
+
+### 2. PARAM_SCHEMA (Parameter Constraints)
+
+Defines what parameters the strategy accepts. **Every strategy automatically includes two built-in parameters** for execution control:
+
+```python
+PARAM_SCHEMA = {
+    # ===== BUILT-IN PARAMETERS (always present) =====
+    "execution_frequency": {
+        "type": "enum",
+        "values": ["1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month"],
+        "default": "1Day",
+        "description": "Frequency at which the strategy executes. All data is resampled to this frequency.",
+    },
+    "execution_price": {
+        "type": "enum",
+        "values": ["open", "close"],
+        "default": "close",
+        "description": "Price column used for trade execution.",
+    },
+
+    # ===== STRATEGY-SPECIFIC PARAMETERS =====
+    "pe_threshold": {
+        "type": "float",
+        "min": 0,
+        "max": 100,
+        "default": 15,
+        "description": "PE ratio below which to buy",
+    },
+    "pe_exit": {
+        "type": "float",
+        "min": 0,
+        "max": 100,
+        "default": 25,
+        "description": "PE ratio above which to sell",
+    },
+}
+```
+
+**Built-in Parameters:**
+- `execution_frequency`: Controls how often signals are generated. All data sources are resampled to this frequency before being passed to `generate_signals()`.
+- `execution_price`: Which price column vectorbt uses for trade execution (`open` or `close`).
+
+### 3. STRATEGY_CODE (Logic)
+
+The function that generates trading signals:
+
+```python
 def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
     """
     Args:
-        data: Dict[str, pd.DataFrame] keyed by DATA_REQUIREMENTS names
-        params: Strategy parameters (DEFAULT_PARAMS merged with overrides)
+        data: Dict[str, pd.DataFrame] keyed by DATA_SCHEMA keys.
+              All DataFrames are pre-resampled to the same frequency.
+        params: Strategy parameters, validated against PARAM_SCHEMA.
 
     Returns:
-        (entries, exits) - boolean Series aligned with primary data index
+        (entries, exits) - boolean Series aligned with data index
     """
-    prices = data['prices']
-    earnings = data['earnings']
+    prices = data['prices']      # guaranteed: ohlcv columns, resampled frequency
+    earnings = data['earnings']  # guaranteed: eps column, same frequency (pre-resampled)
 
-    eps = earnings['eps'].reindex(prices.index, method='ffill')
-    pe_ratio = prices['close'] / eps
+    # No manual reindexing needed - orchestrator already aligned everything
+    pe_ratio = prices['close'] / earnings['eps']
 
     entries = (pe_ratio < params['pe_threshold']).fillna(False).astype(bool)
     exits = (pe_ratio > params['pe_exit']).fillna(False).astype(bool)
@@ -109,411 +389,124 @@ def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
     return entries, exits
 ```
 
-## Design Decisions (Options)
+**Note:** The strategy code no longer needs to handle resampling/reindexing. The orchestrator aligns all data to the common `execution_frequency` before calling `generate_signals()`.
 
-### 1. Symbol Handling
+### 4. Runtime Inputs (Symbols)
 
-How does `DATA_REQUIREMENTS` reference symbols?
+Symbols are passed at runtime, mapped to DATA_SCHEMA slots:
 
-#### Option A: Placeholder Substitution
 ```python
-DATA_REQUIREMENTS = [
-    {"name": "prices", "symbol": "{symbol}", "provider": "alpaca", ...},
-]
-# Orchestrator substitutes {symbol} → "SPY" at runtime
+# User: "Run this on SPY"
+symbols = {"prices": "SPY", "earnings": "SPY"}
+
+# User: "Run pairs trading on GLD vs SLV"
+symbols = {"asset_a": "GLD", "asset_b": "SLV"}
 ```
-| Pros | Cons |
-|------|------|
-| Explicit about symbol substitution | Requires string parsing/substitution |
-| Works for both single and multi-symbol | Magic placeholder syntax |
 
-#### Option B: Explicit Symbols in Requirements
+The orchestrator uses these to fetch data from appropriate providers.
+
+### 5. ERROR_SCHEMA (Error Response)
+
+When errors occur, a structured error response is returned to the widget for visualization:
+
 ```python
-DATA_REQUIREMENTS = [
-    {"name": "spy_prices", "symbol": "SPY", ...},
-    {"name": "qqq_prices", "symbol": "QQQ", ...},
-]
-```
-| Pros | Cons |
-|------|------|
-| Clear what data is fetched | Strategy is tied to specific symbols |
-| Good for cross-symbol strategies | Can't reuse strategy for different symbols |
-
-#### Option C: Symbol-Agnostic (Injected at Runtime)
-```python
-DATA_REQUIREMENTS = [
-    {"name": "prices", "provider": "alpaca", ...},  # no symbol field
-]
-# Orchestrator runs for each symbol in payload.symbols
-```
-| Pros | Cons |
-|------|------|
-| Strategy is reusable across symbols | Doesn't support cross-symbol strategies |
-| Simple requirements structure | Need separate mode for pairs trading |
-
-#### Option D: Hybrid (Mode-Based)
-- `single_symbol` mode: Symbol injected at runtime (Option C)
-- `multi_symbol` mode: Symbols explicit in requirements (Option B)
-
-| Pros | Cons |
-|------|------|
-| Supports both use cases | More complex |
-| Flexible | Two different patterns to understand |
-
-**Status:** UNDECIDED
-
----
-
-### 2. Primary Data / Signal Alignment
-
-Signals must align with one time index. How do we specify which?
-
-#### Option A: Flag in DATA_REQUIREMENTS
-```python
-DATA_REQUIREMENTS = [
-    {"name": "prices", "provider": "alpaca", ..., "primary": True},
-    {"name": "earnings", "provider": "alpha_vantage", ...},
-]
-```
-| Pros | Cons |
-|------|------|
-| Co-located with data definition | Only one can be primary |
-| Clear which is primary | Clutters requirements |
-
-#### Option B: Separate STRATEGY_CONFIG
-```python
-STRATEGY_CONFIG = {
-    "primary_data": "prices",
+ERROR_SCHEMA = {
+    "success": False,
+    "error": {
+        "type": "data_fetch_error",      # error category
+        "message": "QQQ data could not be loaded",  # user-friendly message
+        "details": {                      # optional technical details
+            "symbol": "QQQ",
+            "provider": "alpaca",
+            "status_code": 404,
+        },
+    },
 }
 ```
-| Pros | Cons |
-|------|------|
-| Clean separation | Another top-level constant |
-| Can include other config | More to parse |
 
-#### Option C: Convention (First is Primary)
+**Error Types:**
+
+| Type | Description | Example Message |
+|------|-------------|-----------------|
+| `data_fetch_error` | Failed to fetch data from provider | "QQQ data could not be loaded, please try again" |
+| `invalid_symbol_error` | Symbol not recognized | "ASDF is not a valid ticker" |
+| `code_generation_error` | Codex failed to generate valid code | "Failed to generate strategy after 5 attempts" |
+| `validation_error` | Generated code failed validation | "Strategy code is missing generate_signals function" |
+| `execution_error` | Strategy code threw an error | "Division by zero in strategy calculation" |
+| `backtest_error` | vectorbt backtest failed | "Insufficient data for backtest period" |
+| `schema_mismatch_error` | Symbols don't match DATA_SCHEMA slots | "Missing symbol mapping for 'asset_b'" |
+
+**Widget Handling:**
+
+The widget should display errors with:
+- Clear error type indicator (icon/color)
+- User-friendly message
+- Optional "Show Details" for technical info
+- Suggested actions when applicable (e.g., "Try a different ticker")
+
+### Complete Strategy File Example
+
 ```python
-DATA_REQUIREMENTS = [
-    {"name": "prices", ...},  # First = primary by convention
-    {"name": "earnings", ...},
-]
-```
-| Pros | Cons |
-|------|------|
-| Simple, no extra syntax | Implicit, easy to forget |
-| Less to configure | Order matters (fragile) |
+# ============== STRATEGY DEFINITION (generated by LLM) ==============
 
-#### Option D: Infer from Function
-The orchestrator inspects which data series the returned signals align with (by index comparison).
-
-| Pros | Cons |
-|------|------|
-| No configuration needed | Requires execution to determine |
-| Always correct | Can't validate before running |
-
-**Status:** UNDECIDED
-
----
-
-### 3. Parsing Generated Code
-
-How do we extract `DATA_REQUIREMENTS`, `DEFAULT_PARAMS`, etc. from generated code?
-
-#### Option A: Execute and Read
-```python
-exec(code, sandbox_globals, sandbox_locals)
-requirements = sandbox_locals.get('DATA_REQUIREMENTS', [])
-```
-| Pros | Cons |
-|------|------|
-| Simple | Security risk (code execution) |
-| Handles complex expressions | Can have side effects |
-
-#### Option B: AST Parsing
-```python
-import ast
-tree = ast.parse(code)
-for node in ast.walk(tree):
-    if isinstance(node, ast.Assign):
-        if target.id == 'DATA_REQUIREMENTS':
-            return ast.literal_eval(node.value)
-```
-| Pros | Cons |
-|------|------|
-| Safe (no execution) | Only works for literal values |
-| No side effects | More complex implementation |
-
-#### Option C: Regex Extraction
-```python
-import re
-match = re.search(r'DATA_REQUIREMENTS\s*=\s*(\[.*?\])', code, re.DOTALL)
-requirements = json.loads(match.group(1))
-```
-| Pros | Cons |
-|------|------|
-| Simple | Fragile, breaks on edge cases |
-| Fast | Doesn't handle Python syntax well |
-
-#### Option D: Structured Output from LLM
-Ask Codex to return JSON separately from code:
-```json
-{
-  "code": "def generate_signals...",
-  "data_requirements": [...],
-  "default_params": {...}
+DATA_SCHEMA = {
+    "prices": {
+        "frequency": "1Day",
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "Daily OHLCV price data",
+    },
+    "earnings": {
+        "frequency": "quarterly",
+        "columns": ["eps"],
+        "description": "Quarterly earnings per share",
+    },
 }
-```
-| Pros | Cons |
-|------|------|
-| Clean separation | Changes LLM interface |
-| Easy to parse | Two things to validate |
-| Type-safe | Code and requirements can diverge |
 
-**Status:** UNDECIDED
-
----
-
-### 4. Multi-Symbol Strategy Support
-
-How do we handle strategies that need multiple symbols (pairs trading, relative value)?
-
-#### Option A: Single Mode Only
-All strategies run independently per symbol. No cross-symbol support.
-
-| Pros | Cons |
-|------|------|
-| Simple | Can't do pairs trading |
-| Easy to parallelize | Limited strategy types |
-
-#### Option B: Multi-Symbol Mode
-Add `mode: "multi_symbol"` that passes all data in one call:
-```python
-data = {
-    'spy': spy_prices_df,
-    'qqq': qqq_prices_df,
-}
-signals = generate_signals(data, params)
-```
-| Pros | Cons |
-|------|------|
-| Supports pairs trading | More complex orchestration |
-| Flexible | Signal alignment is trickier |
-
-#### Option C: Always Multi-Symbol
-Always pass data as dict keyed by symbol, even for single-symbol:
-```python
-# Single symbol
-data = {'SPY': {'prices': df}}
-# Multi symbol
-data = {'SPY': {'prices': df}, 'QQQ': {'prices': df}}
-```
-| Pros | Cons |
-|------|------|
-| Consistent interface | More verbose for simple cases |
-| No mode switching | Strategy must handle both |
-
-**Status:** UNDECIDED
-
----
-
-### 5. Parameter Schema / Validation
-
-Should we have typed parameter schemas beyond just `DEFAULT_PARAMS`?
-
-#### Option A: Simple Dict Only
-```python
-DEFAULT_PARAMS = {
-    "pe_threshold": 15,
-    "ma_window": 20,
-}
-```
-| Pros | Cons |
-|------|------|
-| Simple | No validation |
-| Easy to generate | No bounds for optimization |
-
-#### Option B: Schema with Types and Bounds
-```python
 PARAM_SCHEMA = {
-    "pe_threshold": {"type": "float", "min": 0, "max": 100, "default": 15},
-    "ma_window": {"type": "int", "min": 1, "max": 500, "default": 20},
+    # Built-in parameters (always present)
+    "execution_frequency": {
+        "type": "enum",
+        "values": ["1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month"],
+        "default": "1Day",
+        "description": "Frequency at which the strategy executes",
+    },
+    "execution_price": {
+        "type": "enum",
+        "values": ["open", "close"],
+        "default": "close",
+        "description": "Price column used for trade execution",
+    },
+    # Strategy-specific parameters
+    "pe_threshold": {
+        "type": "float",
+        "min": 0,
+        "max": 100,
+        "default": 15,
+        "description": "PE ratio below which to buy",
+    },
+    "pe_exit": {
+        "type": "float",
+        "min": 0,
+        "max": 100,
+        "default": 25,
+        "description": "PE ratio above which to sell",
+    },
 }
+
+def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
+    """Returns signals at execution_frequency."""
+    prices = data['prices']
+    earnings = data['earnings']
+
+    # No reindexing needed - all data already aligned by orchestrator
+    pe_ratio = prices['close'] / earnings['eps']
+
+    entries = (pe_ratio < params['pe_threshold']).fillna(False).astype(bool)
+    exits = (pe_ratio > params['pe_exit']).fillna(False).astype(bool)
+
+    return entries, exits
 ```
-| Pros | Cons |
-|------|------|
-| Validation possible | More complex to generate |
-| UI can auto-generate inputs | More to parse |
-| Optimization knows bounds | |
 
-#### Option C: Pydantic Model
-```python
-class StrategyParams(BaseModel):
-    pe_threshold: float = Field(default=15, ge=0, le=100)
-    ma_window: int = Field(default=20, ge=1, le=500)
-```
-| Pros | Cons |
-|------|------|
-| Full validation | Hard for LLM to generate |
-| IDE autocomplete | Requires class definition |
-
-**Status:** UNDECIDED
-
----
-
-### 6. Error Handling for Data Fetching
-
-What happens when a data provider fails or returns no data?
-
-#### Option A: Fail Fast
-Any data fetch error fails the entire backtest.
-
-| Pros | Cons |
-|------|------|
-| Simple | One bad symbol kills everything |
-| Clear failure | No partial results |
-
-#### Option B: Skip and Warn
-Skip symbols with errors, return partial results with warnings.
-
-| Pros | Cons |
-|------|------|
-| Resilient | Partial results may confuse |
-| Gets some results | Silent failures possible |
-
-#### Option C: Feed Back to Codex
-Feed error back to Codex agent to fix `DATA_REQUIREMENTS`.
-
-| Pros | Cons |
-|------|------|
-| Self-healing | Uses more API calls |
-| Handles typos | May not be fixable |
-
-#### Option D: Fallback Providers
-Try alternative providers if primary fails (e.g., Yahoo if Alpaca fails).
-
-| Pros | Cons |
-|------|------|
-| Resilient | Data may differ between providers |
-| Automatic recovery | Complex configuration |
-
-**Status:** UNDECIDED
-
----
-
-### 7. Caching Strategy
-
-How do we cache fetched data to avoid redundant API calls?
-
-#### Option A: No Caching
-Fetch fresh data every time.
-
-| Pros | Cons |
-|------|------|
-| Simple | Slow, wasteful |
-| Always fresh | May hit rate limits |
-
-#### Option B: In-Memory Session Cache
-Cache data for the duration of the session/request.
-
-| Pros | Cons |
-|------|------|
-| Simple implementation | Lost between requests |
-| No persistence concerns | Re-fetches on restart |
-
-#### Option C: Persistent Cache (SQLite/Redis)
-Store fetched data in database with TTL.
-
-| Pros | Cons |
-|------|------|
-| Fast subsequent requests | More infrastructure |
-| Survives restarts | Cache invalidation complexity |
-
-#### Option D: Hybrid (Memory + Disk)
-In-memory for hot data, disk for historical.
-
-| Pros | Cons |
-|------|------|
-| Best performance | Most complex |
-| Handles both cases | Two systems to manage |
-
-**Status:** UNDECIDED
-
----
-
-### 8. Fundamental Data Provider
-
-Which provider to use for fundamental data (earnings, balance sheet, etc.)?
-
-#### Option A: Alpha Vantage
-| Pros | Cons |
-|------|------|
-| Free tier available | 5 calls/min rate limit (free) |
-| Good coverage | Limited historical depth |
-
-#### Option B: Polygon.io
-| Pros | Cons |
-|------|------|
-| High quality data | Paid only |
-| Good API | Cost |
-
-#### Option C: Financial Modeling Prep
-| Pros | Cons |
-|------|------|
-| Comprehensive | Paid for full access |
-| Good free tier | |
-
-#### Option D: Yahoo Finance (yfinance)
-| Pros | Cons |
-|------|------|
-| Free | Unofficial, may break |
-| No API key needed | Limited/inconsistent data |
-
-#### Option E: Multiple (with fallback)
-Support multiple providers, use as fallbacks.
-
-| Pros | Cons |
-|------|------|
-| Resilient | More implementation work |
-| Flexibility | Data consistency issues |
-
-**Status:** UNDECIDED
-
----
-
-### 9. Execution Price Configuration
-
-Which price column should vectorbt use for trade execution?
-
-#### Option A: Always Close
-Assume trades execute at close price.
-
-| Pros | Cons |
-|------|------|
-| Simple | Not realistic for some strategies |
-| Standard practice | |
-
-#### Option B: Configurable in STRATEGY_CONFIG
-```python
-STRATEGY_CONFIG = {
-    "execution_price": "open",  # or "close", "vwap"
-}
-```
-| Pros | Cons |
-|------|------|
-| Flexible | More configuration |
-| More realistic | VWAP needs additional data |
-
-#### Option C: Signal-Based (Next Open)
-Entry signals execute at next bar's open (more realistic).
-
-| Pros | Cons |
-|------|------|
-| Avoids lookahead bias | More complex |
-| Realistic | Slightly different semantics |
-
-**Status:** UNDECIDED
-
----
 
 ## Reference Implementation (One Possible Approach)
 
@@ -532,7 +525,7 @@ class DataProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Provider identifier used in DATA_REQUIREMENTS."""
+        """Provider identifier used in DATA_PARAMS."""
         ...
 
     @property
@@ -594,7 +587,7 @@ class ProviderRegistry:
 # Global registry
 PROVIDERS = ProviderRegistry()
 PROVIDERS.register(AlpacaProvider())
-PROVIDERS.register(AlphaVantageProvider())
+PROVIDERS.register(FMPProvider())  # Financial Modeling Prep for fundamentals
 ```
 
 ## Updated BacktestInput Schema
@@ -609,7 +602,7 @@ class BacktestInput(BaseModel):
 
     # Runtime parameters
     symbols: List[str]  # Symbols to backtest
-    params: Optional[Dict[str, Any]] = None  # Override DEFAULT_PARAMS
+    params: Optional[Dict[str, Any]] = None  # Override defaults from PARAM_SCHEMA
 
     # Time range
     start: Optional[str] = None
@@ -640,25 +633,26 @@ class BacktestOrchestrator:
             # Feed back to agent for fixing...
             pass
 
-        # 3. Parse declarative sections (safe AST parsing)
-        config = parse_strategy_config(code)
-        requirements = parse_requirements(code)
-        default_params = parse_default_params(code)
+        # 3. Extract schemas from structured LLM response (already JSON)
+        data_schema = response['data_schema']
+        param_schema = response['param_schema']
+        code = response['code']
 
-        # 4. Merge params (user overrides defaults)
+        # 4. Extract default params from schema, merge with user overrides
+        default_params = {k: v['default'] for k, v in param_schema.items()}
         params = {**default_params, **(payload.params or {})}
 
-        # 5. Determine execution mode
-        if config.get("mode") == "multi_symbol":
-            return self._run_multi_symbol(code, requirements, params, payload)
-        else:
-            return self._run_single_symbol(code, requirements, params, payload)
+        # 5. Get execution_frequency from params (built-in parameter)
+        exec_freq = params.get('execution_frequency', '1Day')
 
-    def _run_single_symbol(self, code, requirements, params, payload):
+        # 6. Run for each symbol
+        return self._run_single_symbol(code, data_schema, params, payload, exec_freq)
+
+    def _run_single_symbol(self, code, data_schema, params, payload, exec_freq):
         results = {}
         for symbol in payload.symbols:
-            # Fetch data for this symbol
-            data = self._fetch_data(requirements, symbol, payload.start, payload.end)
+            # Fetch and resample data to execution_frequency
+            data = self._fetch_and_resample(data_schema, symbol, payload.start, payload.end, exec_freq)
 
             # Execute strategy
             result = self.executor.execute(code, data, params)
@@ -666,20 +660,34 @@ class BacktestOrchestrator:
 
         return results
 
-    def _fetch_data(self, requirements, symbol, start, end):
+    def _fetch_and_resample(self, data_schema, symbol, start, end, exec_freq):
         data = {}
-        for req in requirements:
-            provider = self.providers.get(req['provider'])
+        for name, schema in data_schema.items():
+            # Fetch at source frequency
+            provider = self.providers.infer_provider(schema)
             df = self.cache.get_or_fetch(
                 provider=provider,
-                symbol=symbol,
-                data_type=req['type'],
+                symbol=schema.get('symbol', symbol),  # use fixed symbol if specified
+                frequency=schema['frequency'],
                 start=start,
                 end=end,
-                **{k: v for k, v in req.items() if k not in ['name', 'provider', 'type']}
             )
-            data[req['name']] = df
+
+            # Resample to execution_frequency
+            if schema['frequency'] != exec_freq:
+                df = self._resample_to_exec_freq(df, schema['frequency'], exec_freq)
+
+            data[name] = df
         return data
+
+    def _resample_to_exec_freq(self, df, source_freq, exec_freq):
+        """Resample DataFrame to execution_frequency."""
+        if is_higher_frequency(source_freq, exec_freq):
+            # Downsample: daily -> weekly (use last value)
+            return df.resample(exec_freq).last()
+        else:
+            # Upsample: quarterly -> daily (forward-fill)
+            return df.resample(exec_freq).ffill()
 ```
 
 ## System Prompt Updates
@@ -694,7 +702,7 @@ alpaca:
   - timeframes: "1Min", "5Min", "15Min", "1Hour", "1Day"
   - columns returned: open, high, low, close, volume
 
-alpha_vantage:
+fmp (Financial Modeling Prep):
   - type: "quarterly_earnings"
   - fields: eps, reported_eps, estimated_eps, surprise, surprise_percentage
   - type: "income_statement"
@@ -730,11 +738,11 @@ Requirement: {requirement}
 Error: {error}
 
 Please check:
-1. Provider name is valid (alpaca, alpha_vantage, yahoo)
+1. Provider name is valid (alpaca, fmp, yahoo)
 2. Data type is supported by the provider
 3. Required fields are available
 
-Output the corrected code with fixed DATA_REQUIREMENTS."""
+Output the corrected code with fixed DATA_SCHEMA."""
 
     session.messages.append({"role": "user", "content": error_message})
 ```
@@ -773,21 +781,22 @@ class DataCache:
 - [ ] Provider interface (`DataProvider` ABC)
 - [ ] Provider registry
 - [ ] Alpaca provider (refactor existing)
-- [ ] AST parsing for DATA_REQUIREMENTS, DEFAULT_PARAMS, STRATEGY_CONFIG
+- [ ] Structured JSON output from LLM (data_schema, param_schema, code)
+- [ ] Resampling logic (upsample with ffill, downsample with aggregation)
 - [ ] Updated system prompt with provider documentation
 - [ ] Updated `generate_signals(data, params)` signature
 - [ ] Orchestrator with single-symbol mode
 
 ### Phase 2: Enhanced Data Support (Priority: Medium)
 
-- [ ] Alpha Vantage provider (or alternative fundamental data source)
+- [ ] FMP provider (Financial Modeling Prep for fundamental data)
 - [ ] In-memory caching
 - [ ] Error handling with Codex feedback for data issues
-- [ ] Yahoo Finance provider (fallback/alternative)
+- [ ] Yahoo Finance provider (fallback/alternative for price data)
 
 ### Phase 3: Advanced Features (Priority: Low)
 
-- [ ] Multi-symbol mode for cross-asset strategies
+- [ ] Multi-symbol strategy examples (pairs trading, relative value)
 - [ ] Parameter schema with validation and bounds
 - [ ] Persistent caching (SQLite or Redis)
 - [ ] Strategy metadata (name, description, version)
@@ -797,7 +806,7 @@ class DataCache:
 
 ### Data & Providers
 
-1. **Which fundamental data provider?** Alpha Vantage has a free tier but rate limits. Polygon.io and Financial Modeling Prep are alternatives. See Decision #8.
+1. ~~**Which fundamental data provider?**~~ **DECIDED:** Financial Modeling Prep (FMP) for earnings, balance sheet, and other fundamental data. See Decision section.
 
 2. **How to handle timezone alignment?** Price data may be in exchange timezone, fundamentals in UTC. Options:
    - Normalize everything to UTC
@@ -813,7 +822,7 @@ class DataCache:
 
 ### Execution & Backtesting
 
-5. **Execution price column?** Currently assumes `close`. See Decision #9.
+5. **Execution price column?** Currently assumes `close`. See Decision #7.
 
 6. **Slippage and transaction costs?** Currently only fees. Should we model:
    - Slippage (market impact)
@@ -858,22 +867,46 @@ class DataCache:
 ### Simple RSI Strategy (Price Only)
 
 ```python
-STRATEGY_CONFIG = {
-    "mode": "single_symbol",
-    "primary_data": "prices",
+# ============== STRATEGY DEFINITION ==============
+
+DATA_SCHEMA = {
+    "prices": {
+        "frequency": "1Day",
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "Daily OHLCV price data",
+    },
 }
 
-DATA_REQUIREMENTS = [
-    {"name": "prices", "provider": "alpaca", "type": "ohlcv", "timeframe": "1Day"},
-]
-
-DEFAULT_PARAMS = {
-    "rsi_window": 14,
-    "oversold": 30,
-    "overbought": 70,
+PARAM_SCHEMA = {
+    # Built-in (always present)
+    "execution_frequency": {"type": "enum", "values": ["1Day", "1Week", ...], "default": "1Day"},
+    "execution_price": {"type": "enum", "values": ["open", "close"], "default": "close"},
+    # Strategy-specific
+    "rsi_window": {
+        "type": "int",
+        "min": 2,
+        "max": 100,
+        "default": 14,
+        "description": "RSI calculation window",
+    },
+    "oversold": {
+        "type": "float",
+        "min": 0,
+        "max": 50,
+        "default": 30,
+        "description": "RSI level considered oversold (buy signal)",
+    },
+    "overbought": {
+        "type": "float",
+        "min": 50,
+        "max": 100,
+        "default": 70,
+        "description": "RSI level considered overbought (sell signal)",
+    },
 }
 
 def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
+    """Returns signals at execution_frequency."""
     prices = data['prices']
     rsi = vbt.RSI.run(prices['close'], window=params['rsi_window']).rsi
 
@@ -883,31 +916,59 @@ def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
     return entries, exits
 ```
 
+**Runtime Input** (for "Run on SPY"):
+```python
+symbols = {"prices": "SPY"}
+```
+
+---
+
 ### PE Ratio Strategy (Price + Fundamentals)
 
 ```python
-STRATEGY_CONFIG = {
-    "mode": "single_symbol",
-    "primary_data": "prices",
+# ============== STRATEGY DEFINITION ==============
+
+DATA_SCHEMA = {
+    "prices": {
+        "frequency": "1Day",
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "Daily OHLCV price data",
+    },
+    "earnings": {
+        "frequency": "quarterly",
+        "columns": ["eps"],
+        "description": "Quarterly earnings per share",
+    },
 }
 
-DATA_REQUIREMENTS = [
-    {"name": "prices", "provider": "alpaca", "type": "ohlcv", "timeframe": "1Day"},
-    {"name": "earnings", "provider": "alpha_vantage", "type": "quarterly_earnings", "fields": ["eps"]},
-]
-
-DEFAULT_PARAMS = {
-    "pe_buy_threshold": 15,
-    "pe_sell_threshold": 25,
+PARAM_SCHEMA = {
+    # Built-in (always present)
+    "execution_frequency": {"type": "enum", "values": ["1Day", "1Week", ...], "default": "1Day"},
+    "execution_price": {"type": "enum", "values": ["open", "close"], "default": "close"},
+    # Strategy-specific
+    "pe_buy_threshold": {
+        "type": "float",
+        "min": 0,
+        "max": 50,
+        "default": 15,
+        "description": "PE ratio below which to buy",
+    },
+    "pe_sell_threshold": {
+        "type": "float",
+        "min": 10,
+        "max": 100,
+        "default": 25,
+        "description": "PE ratio above which to sell",
+    },
 }
 
 def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
+    """Returns signals at execution_frequency."""
     prices = data['prices']
     earnings = data['earnings']
 
-    # Forward-fill quarterly EPS to daily
-    eps = earnings['eps'].reindex(prices.index, method='ffill')
-    pe_ratio = prices['close'] / eps
+    # No manual reindexing - orchestrator already aligned to execution_frequency
+    pe_ratio = prices['close'] / earnings['eps']
 
     entries = (pe_ratio < params['pe_buy_threshold']).fillna(False).astype(bool)
     exits = (pe_ratio > params['pe_sell_threshold']).fillna(False).astype(bool)
@@ -915,31 +976,66 @@ def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
     return entries, exits
 ```
 
+**Runtime Input** (for "Run on AAPL"):
+```python
+symbols = {"prices": "AAPL", "earnings": "AAPL"}
+```
+
+---
+
 ### Pairs Trading Strategy (Multi-Symbol)
 
 ```python
-STRATEGY_CONFIG = {
-    "mode": "multi_symbol",
-    "primary_data": "spy",
+# ============== STRATEGY DEFINITION ==============
+
+DATA_SCHEMA = {
+    "asset_a": {
+        "frequency": "1Day",
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "First asset in the pair",
+    },
+    "asset_b": {
+        "frequency": "1Day",
+        "columns": ["open", "high", "low", "close", "volume"],
+        "description": "Second asset in the pair",
+    },
 }
 
-DATA_REQUIREMENTS = [
-    {"name": "spy", "symbol": "SPY", "provider": "alpaca", "type": "ohlcv", "timeframe": "1Day"},
-    {"name": "qqq", "symbol": "QQQ", "provider": "alpaca", "type": "ohlcv", "timeframe": "1Day"},
-]
-
-DEFAULT_PARAMS = {
-    "zscore_entry": 2.0,
-    "zscore_exit": 0.5,
-    "lookback": 20,
+PARAM_SCHEMA = {
+    # Built-in (always present)
+    "execution_frequency": {"type": "enum", "values": ["1Day", "1Week", ...], "default": "1Day"},
+    "execution_price": {"type": "enum", "values": ["open", "close"], "default": "close"},
+    # Strategy-specific
+    "zscore_entry": {
+        "type": "float",
+        "min": 0.5,
+        "max": 5.0,
+        "default": 2.0,
+        "description": "Z-score threshold to enter trade",
+    },
+    "zscore_exit": {
+        "type": "float",
+        "min": 0,
+        "max": 2.0,
+        "default": 0.5,
+        "description": "Z-score threshold to exit trade",
+    },
+    "lookback": {
+        "type": "int",
+        "min": 5,
+        "max": 100,
+        "default": 20,
+        "description": "Lookback period for mean/std calculation",
+    },
 }
 
 def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
-    spy = data['spy']['close']
-    qqq = data['qqq']['close']
+    """Returns signals at execution_frequency."""
+    a = data['asset_a']['close']
+    b = data['asset_b']['close']
 
     # Calculate spread
-    spread = spy / qqq
+    spread = a / b
     spread_mean = spread.rolling(params['lookback']).mean()
     spread_std = spread.rolling(params['lookback']).std()
     zscore = (spread - spread_mean) / spread_std
@@ -950,3 +1046,16 @@ def generate_signals(data: dict, params: dict) -> tuple[pd.Series, pd.Series]:
 
     return entries, exits
 ```
+
+**Runtime Input** (symbols injected, strategy is reusable):
+```python
+# User: "Run pairs trading on SPY vs QQQ"
+symbols = {"asset_a": "SPY", "asset_b": "QQQ"}
+
+# User: "Run pairs trading on GLD vs SLV"
+symbols = {"asset_a": "GLD", "asset_b": "SLV"}
+
+# Same strategy logic works for any pair!
+```
+
+**Note:** The strategy defines abstract slots (`asset_a`, `asset_b`). Symbols are mapped at runtime, making the strategy reusable across any pair of assets.
