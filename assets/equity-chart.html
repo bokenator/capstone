@@ -177,6 +177,104 @@
         max-height: 200px;
         overflow-y: auto;
       }
+      .params-section {
+        margin-top: 16px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .params-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 14px;
+        background: rgba(255, 255, 255, 0.03);
+        cursor: pointer;
+        user-select: none;
+      }
+      .params-header:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .params-header h4 {
+        margin: 0;
+        font-size: 13px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .params-toggle {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .params-content {
+        padding: 14px;
+        background: rgba(0, 0, 0, 0.2);
+      }
+      .params-group {
+        margin-bottom: 14px;
+      }
+      .params-group:last-child {
+        margin-bottom: 0;
+      }
+      .params-group-title {
+        font-size: 11px;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .params-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
+      }
+      .param-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 10px;
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .param-key {
+        color: var(--muted);
+      }
+      .param-value {
+        color: var(--text);
+        font-family: monospace;
+        font-weight: 500;
+      }
+      .param-value.null {
+        color: var(--muted);
+        font-style: italic;
+      }
+      .code-block {
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        font-family: monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 200px;
+        overflow-y: auto;
+        color: var(--text);
+      }
+      .prompt-text {
+        background: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text);
+        font-style: italic;
+      }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -250,6 +348,168 @@
       function formatNumber(val, decimals = 2) {
         if (val == null || isNaN(val)) return "—";
         return Number(val).toFixed(decimals);
+      }
+
+      function formatParamValue(val) {
+        if (val === null || val === undefined) return "null";
+        if (typeof val === "boolean") return val ? "true" : "false";
+        if (typeof val === "number") return val.toString();
+        if (typeof val === "string") return val;
+        if (Array.isArray(val)) return JSON.stringify(val);
+        if (typeof val === "object") return JSON.stringify(val);
+        return String(val);
+      }
+
+      function ParamsSection({ payload }) {
+        const [expanded, setExpanded] = useState(false);
+
+        if (!payload) return null;
+
+        const params = payload.params || {};
+        const paramSchema = payload.param_schema || {};
+        const dataSchema = payload.data_schema || {};
+        const prompt = payload.prompt || "";
+        const generatedCode = payload.generated_code || "";
+
+        // Execution parameters
+        const execParams = {
+          direction: payload.direction,
+          execution_price: payload.execution_price,
+          stop_loss: payload.stop_loss,
+          take_profit: payload.take_profit,
+          trailing_stop: payload.trailing_stop,
+          slippage: payload.slippage,
+        };
+
+        // Strategy-specific parameters (exclude built-in execution params)
+        const builtinKeys = ['execution_frequency', 'execution_price', 'direction', 'stop_loss', 'take_profit', 'trailing_stop', 'slippage'];
+        const strategyParams = {};
+        for (const [k, v] of Object.entries(params)) {
+          if (!builtinKeys.includes(k)) {
+            strategyParams[k] = v;
+          }
+        }
+
+        return React.createElement(
+          "div",
+          { className: "params-section" },
+          React.createElement(
+            "div",
+            { className: "params-header", onClick: () => setExpanded(!expanded) },
+            React.createElement("h4", null, "📋 Parameters for Reproducibility"),
+            React.createElement("span", { className: "params-toggle" }, expanded ? "▼ Hide" : "▶ Show")
+          ),
+          expanded && React.createElement(
+            "div",
+            { className: "params-content" },
+
+            // Prompt
+            prompt && React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Strategy Prompt"),
+              React.createElement("div", { className: "prompt-text" }, prompt)
+            ),
+
+            // Execution Parameters
+            React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Execution Parameters"),
+              React.createElement(
+                "div",
+                { className: "params-grid" },
+                Object.entries(execParams).map(([key, val]) =>
+                  React.createElement(
+                    "div",
+                    { className: "param-item", key: key },
+                    React.createElement("span", { className: "param-key" }, key),
+                    React.createElement(
+                      "span",
+                      { className: "param-value" + (val === null || val === undefined ? " null" : "") },
+                      formatParamValue(val)
+                    )
+                  )
+                )
+              )
+            ),
+
+            // Strategy Parameters
+            Object.keys(strategyParams).length > 0 && React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Strategy Parameters"),
+              React.createElement(
+                "div",
+                { className: "params-grid" },
+                Object.entries(strategyParams).map(([key, val]) => {
+                  const schema = paramSchema[key] || {};
+                  const desc = schema.description ? ` (${schema.description})` : "";
+                  return React.createElement(
+                    "div",
+                    { className: "param-item", key: key, title: desc },
+                    React.createElement("span", { className: "param-key" }, key),
+                    React.createElement(
+                      "span",
+                      { className: "param-value" + (val === null || val === undefined ? " null" : "") },
+                      formatParamValue(val)
+                    )
+                  );
+                })
+              )
+            ),
+
+            // Data Schema
+            Object.keys(dataSchema).length > 0 && React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Data Schema"),
+              React.createElement(
+                "div",
+                { className: "params-grid" },
+                Object.entries(dataSchema).map(([slot, config]) =>
+                  React.createElement(
+                    "div",
+                    { className: "param-item", key: slot, style: { gridColumn: "span 2" } },
+                    React.createElement("span", { className: "param-key" }, slot),
+                    React.createElement(
+                      "span",
+                      { className: "param-value" },
+                      `${config.frequency || "?"} | ${(config.columns || []).join(", ")}`
+                    )
+                  )
+                )
+              )
+            ),
+
+            // Symbol Mapping
+            payload.symbol_mapping && React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Symbol Mapping"),
+              React.createElement(
+                "div",
+                { className: "params-grid" },
+                Object.entries(payload.symbol_mapping).map(([slot, symbol]) =>
+                  React.createElement(
+                    "div",
+                    { className: "param-item", key: slot },
+                    React.createElement("span", { className: "param-key" }, slot),
+                    React.createElement("span", { className: "param-value" }, symbol)
+                  )
+                )
+              )
+            ),
+
+            // Generated Code
+            generatedCode && React.createElement(
+              "div",
+              { className: "params-group" },
+              React.createElement("div", { className: "params-group-title" }, "Generated Strategy Code"),
+              React.createElement("pre", { className: "code-block" }, generatedCode)
+            )
+          )
+        );
       }
 
       function App() {
@@ -507,7 +767,10 @@
                     React.createElement("div", null, React.createElement("strong", null, "Timeframe:"), " ", payload.timeframe),
                     payload.data && React.createElement("div", null, React.createElement("strong", null, "Bars:"), " ", payload.data.length),
                     React.createElement("div", null, React.createElement("strong", null, "Range:"), " ", dateRange)
-                  )
+                  ),
+
+                  // Parameters section for reproducibility
+                  React.createElement(ParamsSection, { payload: payload })
                 )
               : React.createElement("div", { className: "empty" }, "No data provided.")
           ),

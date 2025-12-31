@@ -19,6 +19,23 @@ from .equity_prices import (
     EquityPricesInput,
     fetch_equity_prices,
 )
+from .schemas import (
+    BUILTIN_PARAM_SCHEMA,
+    BacktestError,
+    DataSlotSchema,
+    DataType,
+    Direction,
+    ErrorType,
+    ExecutionFrequency,
+    ExecutionPrice,
+    ParamDefinition,
+    StrategyOutput,
+    TimestampType,
+    apply_direction_filter,
+    extract_defaults_from_param_schema,
+    merge_params,
+    positions_to_signals,
+)
 from .strategy_executor import (
     BacktestMetrics,
     BacktestResult,
@@ -43,6 +60,13 @@ from .widgets import (
     tool_invocation_meta,
     tool_meta,
 )
+from .providers import (
+    AlpacaProvider,
+    DataProvider,
+    ProviderRegistry,
+    get_provider_registry,
+    resample_to_frequency,
+)
 
 __all__ = [
     # Common
@@ -61,6 +85,22 @@ __all__ = [
     "BacktestInput",
     "run_backtest",
     "format_result_text",
+    # Schemas (v2 architecture)
+    "BUILTIN_PARAM_SCHEMA",
+    "BacktestError",
+    "DataSlotSchema",
+    "DataType",
+    "Direction",
+    "ErrorType",
+    "ExecutionFrequency",
+    "ExecutionPrice",
+    "ParamDefinition",
+    "StrategyOutput",
+    "TimestampType",
+    "apply_direction_filter",
+    "extract_defaults_from_param_schema",
+    "merge_params",
+    "positions_to_signals",
     # Strategy generator (Codex agent)
     "CodexAgent",
     "CodexSession",
@@ -82,4 +122,10 @@ __all__ = [
     "resource_description",
     "tool_invocation_meta",
     "tool_meta",
+    # Providers
+    "AlpacaProvider",
+    "DataProvider",
+    "ProviderRegistry",
+    "get_provider_registry",
+    "resample_to_frequency",
 ]
