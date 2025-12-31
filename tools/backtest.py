@@ -288,11 +288,19 @@ def _fetch_prices_for_symbol(
     limit: int = 5000,
 ) -> pd.DataFrame:
     """Fetch price data for a single symbol."""
+    from datetime import datetime, timedelta, timezone
+
     api_key, api_secret = get_alpaca_credentials()
     client = StockHistoricalDataClient(api_key, api_secret)
 
     timeframe = resolve_timeframe(timeframe_str)
-    start_dt = parse_dt(start)
+
+    # Default to 10 years of data if no start date provided
+    if start:
+        start_dt = parse_dt(start)
+    else:
+        start_dt = datetime.now(timezone.utc) - timedelta(days=365 * 10)
+
     end_dt = parse_dt(end)
 
     request = StockBarsRequest(
@@ -898,36 +906,53 @@ def format_result_text(result: Dict[str, Any]) -> str:
     trailing_stop = result.get("trailing_stop", False)
     slippage = result.get("slippage", 0.0)
 
+    # Get symbols from various possible locations
+    symbols = result.get("symbols", []) or meta.get("symbols", [])
+    symbols_str = ", ".join(symbols) if symbols else "unknown"
+
+    # Get per-symbol metrics if available
+    metrics_by_symbol = result.get("metrics_by_symbol", {})
+
     lines = [
-        f"Backtest complete for {meta.get('symbols', [])} (attempt {attempts}, direction: {direction}).",
-        f"Bars: {num_bars} | Position changes: {position_changes}",
-        f"Long entries: {long_entries} | Long exits: {long_exits}",
+        f"✅ BACKTEST COMPLETE",
+        f"",
+        f"Symbols: {symbols_str} | Timeframe: {result.get('timeframe', '1Day')} | Direction: {direction}",
+        f"Data: {num_bars} bars | Generated in {attempts} attempt(s)",
+        f"",
     ]
 
-    if direction in ("both", "shortonly"):
-        lines.append(f"Short entries: {short_entries} | Short exits: {short_exits}")
+    # Show per-symbol results if available
+    if metrics_by_symbol:
+        lines.append("RESULTS BY SYMBOL:")
+        for sym, m in metrics_by_symbol.items():
+            ret = m.get('total_return', 0)
+            sharpe = m.get('sharpe_ratio', 0)
+            trades = m.get('num_trades', 0)
+            max_dd = m.get('max_drawdown', 0)
+            lines.append(f"  {sym}: Return={ret:.2%} | Sharpe={sharpe:.2f} | Trades={trades} | MaxDD={max_dd:.2%}")
+        lines.append("")
+    else:
+        # Fallback to overall metrics
+        lines.extend([
+            f"Return: {metrics.get('total_return', 0):.2%} | Sharpe: {metrics.get('sharpe_ratio', 0):.2f}",
+            f"Trades: {metrics.get('num_trades', 0)} | Win Rate: {metrics.get('win_rate', 0):.1%} | Max DD: {metrics.get('max_drawdown', 0):.2%}",
+            "",
+        ])
+
+    # Execution settings summary
+    exec_parts = [f"Execution: {exec_price}"]
+    if slippage and slippage > 0:
+        exec_parts.append(f"Slippage: {slippage*10000:.0f}bps")
+    if stop_loss is not None:
+        exec_parts.append(f"SL: {stop_loss:.1%}")
+    if take_profit is not None:
+        exec_parts.append(f"TP: {take_profit:.1%}")
+    lines.append(" | ".join(exec_parts))
 
     lines.extend([
-        f"Trades: {metrics.get('num_trades', 0)} | Win rate: {metrics.get('win_rate', 0):.1%}",
-        f"Return: {metrics.get('total_return', 0):.2%} | Sharpe: {metrics.get('sharpe_ratio', 0):.2f} | Max DD: {metrics.get('max_drawdown', 0):.2%}",
+        "",
+        "📊 Full results with equity curves are displayed in the widget above.",
+        "📋 Strategy parameters and generated code are available in the widget's 'Parameters for Reproducibility' section.",
     ])
-
-    # Add execution params if non-default
-    exec_info = [f"Execution: {exec_price}"]
-    if stop_loss is not None:
-        exec_info.append(f"SL: {stop_loss:.1%}")
-        if trailing_stop:
-            exec_info.append("(trailing)")
-    if take_profit is not None:
-        exec_info.append(f"TP: {take_profit:.1%}")
-    if slippage and slippage > 0:
-        exec_info.append(f"Slippage: {slippage:.2%}")
-    if len(exec_info) > 1:  # Only show if there's more than just execution price
-        lines.append(" | ".join(exec_info))
-
-    # Include generated code snippet
-    code = meta.get("strategy_code", "") or result.get("generated_code", "")
-    if code:
-        lines.append(f"\nGenerated strategy:\n```python\n{code}\n```")
 
     return "\n".join(lines)
