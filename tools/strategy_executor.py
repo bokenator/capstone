@@ -18,7 +18,7 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,9 @@ import vectorbt as vbt
 
 from .strategy_generator import ExecutionResult
 from .schemas import apply_direction_filter, positions_to_signals
+
+if TYPE_CHECKING:
+    from .models import BacktestRunResult, GeneratedStrategy
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -614,6 +617,165 @@ class StrategyExecutor:
             base_result.error_type = type(e).__name__
             base_result.error_traceback = traceback.format_exc()
             return base_result
+
+
+    def execute_generated_strategy(
+        self,
+        strategy: "GeneratedStrategy",
+        data_dict: Dict[str, pd.DataFrame],
+        direction: str = "longonly",
+    ) -> "BacktestRunResult":
+        """Execute a GeneratedStrategy and return a BacktestRunResult.
+
+        This is the new v3 interface that accepts the structured data types
+        from the multi-strategy architecture.
+
+        Args:
+            strategy: GeneratedStrategy with code, schemas, and spec.
+            data_dict: Dict mapping slot names to price DataFrames.
+            direction: Specific direction for this run.
+
+        Returns:
+            BacktestRunResult with structured results.
+        """
+        # Import here to avoid circular import
+        from .models import (
+            BacktestMeta,
+            BacktestRunResult,
+            ExecutionParams,
+            Metrics,
+            SymbolResult,
+            Trade,
+        )
+
+        spec = strategy.spec
+        logger.info("=" * 60)
+        logger.info("EXECUTING GENERATED STRATEGY")
+        logger.info("=" * 60)
+        logger.info(f"Strategy: {spec.name}")
+        logger.info(f"Direction: {direction}")
+        logger.info(f"Symbols: {spec.symbols}")
+        logger.info(f"Data slots: {list(data_dict.keys())}")
+
+        # Build execution params
+        exec_params = ExecutionParams(
+            direction=direction,
+            execution_price=spec.execution_price,
+            slippage=spec.slippage,
+            stop_loss=spec.stop_loss,
+            take_profit=spec.take_profit,
+            trailing_stop=False,
+            init_cash=spec.init_cash,
+            fees=self.fees,
+        )
+
+        # Get first DataFrame to determine timeframe and dates
+        first_slot = list(data_dict.keys())[0]
+        first_df = data_dict[first_slot]
+
+        # Build result structure
+        result = BacktestRunResult(
+            strategy_name=spec.name,
+            direction=direction,
+            execution=exec_params,
+            meta=BacktestMeta(
+                timeframe="1Day",  # Will be populated from data
+                start_date=str(first_df.index[0]),
+                end_date=str(first_df.index[-1]),
+                total_bars=len(first_df),
+            ),
+        )
+
+        # Prepare params for execution
+        params = strategy.params.copy()
+        params["execution_price"] = spec.execution_price
+        params["slippage"] = spec.slippage
+        params["stop_loss"] = spec.stop_loss
+        params["take_profit"] = spec.take_profit
+
+        # Execute using existing method
+        backtest_result = self.execute(
+            code=strategy.code,
+            prices=first_df,  # Fallback for single-asset
+            symbols=spec.symbols,
+            timeframe="1Day",
+            params=params,
+            direction=direction,
+            data=data_dict,
+        )
+
+        if not backtest_result.success:
+            result.success = False
+            result.error = backtest_result.error
+            return result
+
+        # Convert BacktestResult to BacktestRunResult
+        # For now, create a single SymbolResult with combined data
+        # In future, we can expand to per-symbol results
+        combined_key = "_".join(spec.symbols) if len(spec.symbols) > 1 else spec.symbols[0]
+
+        # Extract trades from vectorbt portfolio
+        trades_list: List[Trade] = []
+        # TODO: Extract individual trade records from vectorbt
+
+        result.results_by_symbol[combined_key] = SymbolResult(
+            symbol=combined_key,
+            timestamps=backtest_result.timestamps,
+            equity_curve=backtest_result.equity_curve,
+            positions=[],  # TODO: Extract position series
+            metrics=Metrics(
+                total_return=backtest_result.metrics.total_return,
+                sharpe_ratio=backtest_result.metrics.sharpe_ratio,
+                sortino_ratio=backtest_result.metrics.sortino_ratio,
+                max_drawdown=backtest_result.metrics.max_drawdown,
+                win_rate=backtest_result.metrics.win_rate,
+                num_trades=backtest_result.metrics.num_trades,
+                profit_factor=backtest_result.metrics.profit_factor,
+                # Enhanced metrics - calculate from equity curve
+                cagr=self._calculate_cagr(backtest_result.equity_curve),
+                volatility=self._calculate_volatility(backtest_result.equity_curve),
+                calmar_ratio=self._calculate_calmar(
+                    backtest_result.equity_curve,
+                    backtest_result.metrics.max_drawdown,
+                ),
+            ),
+            trades=trades_list,
+        )
+
+        return result
+
+    def _calculate_cagr(self, equity_curve: List[float]) -> float:
+        """Calculate Compound Annual Growth Rate."""
+        if not equity_curve or len(equity_curve) < 2:
+            return 0.0
+        try:
+            start_val = equity_curve[0]
+            end_val = equity_curve[-1]
+            if start_val <= 0:
+                return 0.0
+            n_years = len(equity_curve) / 252  # Assume 252 trading days
+            if n_years <= 0:
+                return 0.0
+            return (end_val / start_val) ** (1 / n_years) - 1
+        except Exception:
+            return 0.0
+
+    def _calculate_volatility(self, equity_curve: List[float]) -> float:
+        """Calculate annualized volatility of returns."""
+        if not equity_curve or len(equity_curve) < 2:
+            return 0.0
+        try:
+            returns = np.diff(equity_curve) / equity_curve[:-1]
+            return float(np.std(returns) * np.sqrt(252))
+        except Exception:
+            return 0.0
+
+    def _calculate_calmar(self, equity_curve: List[float], max_drawdown: float) -> float:
+        """Calculate Calmar ratio (CAGR / Max Drawdown)."""
+        cagr = self._calculate_cagr(equity_curve)
+        if abs(max_drawdown) < 0.0001:
+            return 0.0
+        return cagr / abs(max_drawdown)
 
 
 def get_strategy_executor(

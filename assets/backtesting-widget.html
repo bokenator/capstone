@@ -2,98 +2,540 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Backtesting Widget</title>
+    <title>Backtesting Results</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
+      * {
+        box-sizing: border-box;
+      }
       body {
-        font-family: Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         background: #0f172a;
         color: #e2e8f0;
         margin: 0;
-        padding: 2rem;
+        padding: 1rem;
+        line-height: 1.5;
+      }
+      .container {
+        max-width: 900px;
+        margin: 0 auto;
       }
       .card {
-        background: #111827;
-        border: 1px solid #1f2937;
+        background: #1e293b;
+        border: 1px solid #334155;
         border-radius: 12px;
-        padding: 1.5rem;
-        max-width: 640px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+        margin-bottom: 1rem;
+        overflow: hidden;
       }
-      h1 {
-        margin: 0 0 0.5rem 0;
-        font-size: 1.5rem;
+      .card-header {
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid #334155;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
       }
-      p {
-        margin: 0 0 1.25rem 0;
-      }
-      .pill {
-        display: inline-block;
-        padding: 0.35rem 0.75rem;
-        margin-right: 0.5rem;
-        border-radius: 999px;
-        background: #1d4ed8;
-        color: #e0f2fe;
+      .card-header h2 {
+        margin: 0;
+        font-size: 1.1rem;
         font-weight: 600;
-        letter-spacing: 0.01em;
       }
-      .note {
-        display: inline-block;
-        margin-top: 0.75rem;
-        padding: 0.75rem 1rem;
+      .card-body {
+        padding: 1rem 1.25rem;
+      }
+
+      /* Status badge */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .badge-success {
+        background: #166534;
+        color: #bbf7d0;
+      }
+      .badge-error {
+        background: #991b1b;
+        color: #fecaca;
+      }
+
+      /* Chart container */
+      #chart-container {
+        width: 100%;
+        height: 350px;
+        background: #0f172a;
         border-radius: 8px;
-        background: #0b1220;
-        border: 1px solid #1f2937;
-        min-width: 50%;
+      }
+
+      /* Legend */
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.8rem;
+      }
+      .legend-color {
+        width: 12px;
+        height: 3px;
+        border-radius: 2px;
+      }
+
+      /* Metrics table */
+      .metrics-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      .metrics-table th,
+      .metrics-table td {
+        padding: 0.6rem 0.75rem;
+        text-align: right;
+        border-bottom: 1px solid #334155;
+      }
+      .metrics-table th {
+        text-align: left;
+        font-weight: 600;
+        color: #94a3b8;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .metrics-table th:first-child,
+      .metrics-table td:first-child {
+        text-align: left;
+      }
+      .metrics-table tr:last-child td {
+        border-bottom: none;
+      }
+      .metrics-table tr:hover td {
+        background: rgba(255,255,255,0.03);
+      }
+      .positive {
+        color: #4ade80;
+      }
+      .negative {
+        color: #f87171;
+      }
+
+      /* Strategy details */
+      .strategy-details {
+        margin-top: 0.5rem;
+      }
+      .strategy-item {
+        border: 1px solid #334155;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+      }
+      .strategy-header {
+        padding: 0.75rem 1rem;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: background 0.15s;
+      }
+      .strategy-header:hover {
+        background: rgba(255,255,255,0.03);
+      }
+      .strategy-header .name {
+        font-weight: 600;
+      }
+      .strategy-header .arrow {
+        transition: transform 0.2s;
+      }
+      .strategy-header.expanded .arrow {
+        transform: rotate(180deg);
+      }
+      .strategy-content {
+        display: none;
+        padding: 1rem;
+        border-top: 1px solid #334155;
+        background: #0f172a;
+      }
+      .strategy-content.show {
+        display: block;
+      }
+      .code-block {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 0.75rem;
+        font-family: "Fira Code", "JetBrains Mono", Consolas, Monaco, monospace;
+        font-size: 0.75rem;
+        overflow-x: auto;
+        white-space: pre;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .param-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+      }
+      .param-item {
+        background: #1e293b;
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+      }
+      .param-item .label {
+        color: #94a3b8;
+        font-size: 0.7rem;
+      }
+      .param-item .value {
+        font-weight: 600;
+      }
+
+      /* Meta info */
+      .meta-info {
+        display: flex;
+        gap: 1.5rem;
+        font-size: 0.8rem;
+        color: #94a3b8;
+        margin-top: 0.5rem;
+      }
+      .meta-item {
+        display: flex;
+        gap: 0.35rem;
+      }
+      .meta-item .label {
+        color: #64748b;
+      }
+
+      /* Loading and error states */
+      .loading {
+        text-align: center;
+        padding: 3rem;
+        color: #64748b;
+      }
+      .error-message {
+        color: #f87171;
+        padding: 1rem;
+        background: rgba(248, 113, 113, 0.1);
+        border-radius: 8px;
       }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h1>Backtesting Widget</h1>
-      <p>
-        This widget is served by the FastMCP demo server. It expects structured content with
-        a <code>note</code> field that will be injected into the UI.
-      </p>
-      <div>
-        <span class="pill" id="status-pill">Ready</span>
-        <span class="pill">FastMCP</span>
-        <span class="pill">uv</span>
+    <div class="container">
+      <div id="widget-content">
+        <div class="loading">Loading backtest results...</div>
       </div>
-      <div class="note" id="note-slot">No note provided yet.</div>
     </div>
+
     <script>
+      // Color palette for strategies
+      const COLORS = [
+        '#3b82f6', // blue
+        '#22c55e', // green
+        '#f59e0b', // amber
+        '#ec4899', // pink
+        '#8b5cf6', // violet
+        '#06b6d4', // cyan
+        '#f97316', // orange
+        '#14b8a6', // teal
+      ];
+
       const SET_GLOBALS_EVENT_TYPE = "openai:set_globals";
 
-      function resolveNote() {
+      function formatPercent(value) {
+        if (value === null || value === undefined || isNaN(value)) return '-';
+        const pct = (value * 100).toFixed(2);
+        return (value >= 0 ? '+' : '') + pct + '%';
+      }
+
+      function formatNumber(value, decimals = 2) {
+        if (value === null || value === undefined || isNaN(value)) return '-';
+        return value.toFixed(decimals);
+      }
+
+      function getColorClass(value) {
+        if (value === null || value === undefined || isNaN(value)) return '';
+        return value >= 0 ? 'positive' : 'negative';
+      }
+
+      function resolveData() {
         const toolOutput = window.openai?.toolOutput;
         if (!toolOutput || typeof toolOutput !== "object") {
           return null;
         }
-        const note = toolOutput.note;
-        return typeof note === "string" ? note : null;
+        return toolOutput;
       }
 
-      function render(note) {
-        const noteSlot = document.getElementById("note-slot");
-        const statusPill = document.getElementById("status-pill");
-        if (!noteSlot || !statusPill) return;
+      function renderChart(container, series) {
+        if (!series || series.length === 0) return;
 
-        if (!note) {
-          noteSlot.textContent = "No note provided yet.";
-          statusPill.textContent = "Ready";
-          statusPill.style.background = "#1d4ed8";
-          statusPill.style.color = "#e0f2fe";
+        const chart = LightweightCharts.createChart(container, {
+          layout: {
+            background: { type: 'solid', color: '#0f172a' },
+            textColor: '#94a3b8',
+          },
+          grid: {
+            vertLines: { color: '#1e293b' },
+            horzLines: { color: '#1e293b' },
+          },
+          crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+          },
+          rightPriceScale: {
+            borderColor: '#334155',
+          },
+          timeScale: {
+            borderColor: '#334155',
+            timeVisible: false,
+          },
+        });
+
+        const legendItems = [];
+
+        series.forEach((s, idx) => {
+          const color = COLORS[idx % COLORS.length];
+          const lineSeries = chart.addLineSeries({
+            color: color,
+            lineWidth: 2,
+            title: s.name,
+          });
+
+          // Convert data to lightweight charts format
+          const chartData = s.data.map(d => ({
+            time: d.time.split('T')[0], // Extract date part
+            value: d.value,
+          }));
+
+          lineSeries.setData(chartData);
+          legendItems.push({ name: s.name, color: color });
+        });
+
+        chart.timeScale().fitContent();
+
+        return legendItems;
+      }
+
+      function renderLegend(container, items) {
+        container.innerHTML = items.map(item => `
+          <div class="legend-item">
+            <div class="legend-color" style="background: ${item.color}"></div>
+            <span>${item.name}</span>
+          </div>
+        `).join('');
+      }
+
+      function renderMetricsTable(container, metricsTable) {
+        if (!metricsTable || metricsTable.length === 0) {
+          container.innerHTML = '<p style="color: #64748b">No metrics available</p>';
           return;
         }
 
-        noteSlot.textContent = note;
-        statusPill.textContent = "Hydrated";
-        statusPill.style.background = "#22c55e";
-        statusPill.style.color = "#052e16";
+        const html = `
+          <table class="metrics-table">
+            <thead>
+              <tr>
+                <th>Strategy</th>
+                <th>Return</th>
+                <th>Sharpe</th>
+                <th>Max DD</th>
+                <th>Win Rate</th>
+                <th>Trades</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${metricsTable.map(row => {
+                const m = row.metrics;
+                return `
+                  <tr>
+                    <td>${row.name}</td>
+                    <td class="${getColorClass(m.total_return)}">${formatPercent(m.total_return)}</td>
+                    <td class="${getColorClass(m.sharpe_ratio)}">${formatNumber(m.sharpe_ratio)}</td>
+                    <td class="negative">${formatPercent(m.max_drawdown)}</td>
+                    <td>${formatPercent(m.win_rate)}</td>
+                    <td>${m.num_trades || 0}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        `;
+
+        container.innerHTML = html;
+      }
+
+      function renderStrategyDetails(container, strategies) {
+        if (!strategies || strategies.length === 0) {
+          container.innerHTML = '<p style="color: #64748b">No strategy details available</p>';
+          return;
+        }
+
+        const html = strategies.map((s, idx) => `
+          <div class="strategy-item">
+            <div class="strategy-header" onclick="toggleStrategy(${idx})">
+              <span class="name">${s.name}</span>
+              <span class="arrow" id="arrow-${idx}">&#9662;</span>
+            </div>
+            <div class="strategy-content" id="content-${idx}">
+              <div class="param-grid">
+                ${Object.entries(s.params_used || {}).slice(0, 6).map(([k, v]) => `
+                  <div class="param-item">
+                    <div class="label">${k}</div>
+                    <div class="value">${v}</div>
+                  </div>
+                `).join('')}
+              </div>
+              <div class="code-block">${escapeHtml(s.code || 'No code available')}</div>
+            </div>
+          </div>
+        `).join('');
+
+        container.innerHTML = html;
+      }
+
+      function toggleStrategy(idx) {
+        const content = document.getElementById(`content-${idx}`);
+        const arrow = document.getElementById(`arrow-${idx}`);
+        const header = arrow.parentElement;
+
+        content.classList.toggle('show');
+        header.classList.toggle('expanded');
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      function render(data) {
+        const container = document.getElementById('widget-content');
+
+        if (!data) {
+          container.innerHTML = '<div class="loading">Waiting for backtest data...</div>';
+          return;
+        }
+
+        if (!data.success) {
+          container.innerHTML = `
+            <div class="card">
+              <div class="card-header">
+                <h2>Backtest Failed</h2>
+                <span class="badge badge-error">Error</span>
+              </div>
+              <div class="card-body">
+                <div class="error-message">${data.error || 'Unknown error occurred'}</div>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        // Check for v3 format (series array) vs v2 format (equity_curves object)
+        const isV3 = Array.isArray(data.series);
+
+        const meta = data.meta || {};
+        const numStrategies = meta.num_strategies || (isV3 ? data.strategies?.length : 1);
+        const numRuns = meta.num_runs || (isV3 ? data.series?.length : 1);
+
+        container.innerHTML = `
+          <div class="card">
+            <div class="card-header">
+              <h2>Equity Curves</h2>
+              <span class="badge badge-success">${numRuns} run${numRuns !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="card-body">
+              <div id="chart-container"></div>
+              <div class="legend" id="chart-legend"></div>
+              <div class="meta-info">
+                <div class="meta-item">
+                  <span class="label">Period:</span>
+                  <span>${meta.start_date?.split('T')[0] || 'N/A'} to ${meta.end_date?.split('T')[0] || 'N/A'}</span>
+                </div>
+                <div class="meta-item">
+                  <span class="label">Bars:</span>
+                  <span>${meta.total_bars || 'N/A'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Performance Metrics</h2>
+            </div>
+            <div class="card-body" id="metrics-container"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Strategy Details</h2>
+            </div>
+            <div class="card-body">
+              <div class="strategy-details" id="strategies-container"></div>
+            </div>
+          </div>
+        `;
+
+        // Render chart
+        const chartContainer = document.getElementById('chart-container');
+        const legendContainer = document.getElementById('chart-legend');
+
+        let chartSeries = [];
+        if (isV3 && data.series) {
+          chartSeries = data.series;
+        } else if (data.equity_curves) {
+          // Convert v2 format to v3 format
+          chartSeries = Object.entries(data.equity_curves).map(([name, curve]) => ({
+            name: name,
+            data: curve,
+          }));
+        }
+
+        if (chartSeries.length > 0) {
+          const legendItems = renderChart(chartContainer, chartSeries);
+          renderLegend(legendContainer, legendItems);
+        }
+
+        // Render metrics table
+        const metricsContainer = document.getElementById('metrics-container');
+        let metricsTable = [];
+        if (isV3 && data.metrics_table) {
+          metricsTable = data.metrics_table;
+        } else if (data.metrics_by_symbol) {
+          // Convert v2 format
+          metricsTable = Object.entries(data.metrics_by_symbol).map(([name, metrics]) => ({
+            name: name,
+            metrics: metrics,
+          }));
+        }
+        renderMetricsTable(metricsContainer, metricsTable);
+
+        // Render strategy details
+        const strategiesContainer = document.getElementById('strategies-container');
+        let strategies = [];
+        if (isV3 && data.strategies) {
+          strategies = data.strategies;
+        } else if (data.generated_code) {
+          // Create v2-style strategy detail
+          strategies = [{
+            name: data.prompt || 'Strategy',
+            code: data.generated_code,
+            params_used: data.params || {},
+          }];
+        }
+        renderStrategyDetails(strategiesContainer, strategies);
       }
 
       function hydrateFromHost() {
-        render(resolveNote());
+        render(resolveData());
       }
 
       window.addEventListener(
@@ -102,6 +544,7 @@
         { passive: true }
       );
 
+      // Initial render
       hydrateFromHost();
     </script>
   </body>

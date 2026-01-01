@@ -3,13 +3,22 @@
 This module provides the MCP tool that uses Codex as an agentic coding tool
 to iteratively generate and fix strategy code until it executes successfully.
 
-Workflow:
+Workflow (v2 - Single Strategy):
 1. Codex generates strategy code from natural language prompt
 2. Code is validated for safety
 3. Code is executed in sandbox with vectorbt
 4. If error, error details are fed back to Codex (same conversation context)
 5. Codex fixes the code
 6. Repeat until success or max attempts
+
+Workflow (v3 - Multi-Strategy):
+1. Strategy Planner parses user intent -> List[StrategySpec]
+2. For each StrategySpec:
+   a. Strategy Generator creates code -> GeneratedStrategy
+   b. For each direction in spec.directions:
+      - Backtest Engine runs strategy -> BacktestRunResult
+3. Result Combiner merges all results -> CombinedBacktestResult
+4. Widget renders unified chart with all equity curves
 """
 
 from __future__ import annotations
@@ -27,12 +36,135 @@ from .common import get_alpaca_credentials, parse_dt, resolve_timeframe
 from .schemas import extract_defaults_from_param_schema, merge_params
 from .strategy_executor import BacktestResult, StrategyExecutor, get_strategy_executor
 from .strategy_generator import CodexAgent, CodexSession, get_codex_agent
+from .providers import get_provider_registry, resample_to_frequency
+
+# v3 imports
+from .models import (
+    CombinedBacktestResult,
+    DisplayConfig,
+    GeneratedStrategy,
+    PlannerOutput,
+    StrategySpec,
+)
+from .strategy_planner import StrategyPlanner, get_strategy_planner
+from .result_combiner import combine_results, downsample_combined_result
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 
 BACKTEST_TOOL_NAME = "backtest"
+
+# =============================================================================
+# V3 Multi-Strategy Tool (preferred)
+# =============================================================================
+
+MULTI_BACKTEST_TOOL_NAME = "multi_backtest"
+
+MULTI_BACKTEST_TOOL_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": """CRITICAL: Pass the user's EXACT request verbatim. DO NOT rephrase, simplify, or split into multiple calls.
+
+This tool handles complex multi-strategy requests automatically, including:
+- Multiple strategies (e.g., "RSI vs MACD on SPY")
+- Benchmark comparisons (e.g., "momentum strategy vs buy-and-hold SPY")
+- Direction comparisons (e.g., "show long-only vs long-short")
+- Multi-symbol strategies (e.g., "pairs trading on GLD and SLV")
+
+The tool's internal planner will parse the user's intent and generate all strategies.
+
+Examples of prompts to pass EXACTLY as the user said them:
+- "Backtest RSI on AAPL with buy-and-hold SPY as benchmark"
+- "Compare MA crossover vs MACD on SPY, show both long-only and long-short"
+- "Valuation strategy on AAPL and MSFT, go long when PE < 50, also show buy-and-hold SPY"
+
+DO NOT translate these into separate tool calls. Pass the full request.""",
+        },
+        "symbols": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Default symbols if not specified in prompt. The planner will extract symbols from the prompt if mentioned there.",
+        },
+        "timeframe": {
+            "type": "string",
+            "description": "Data timeframe: 1Day (default), 1Hour, 1Week, etc.",
+            "default": "1Day",
+        },
+        "start": {
+            "type": "string",
+            "description": "ISO8601 start datetime (UTC), e.g., 2024-01-01",
+        },
+        "end": {
+            "type": "string",
+            "description": "ISO8601 end datetime (UTC)",
+        },
+        "init_cash": {
+            "type": "number",
+            "description": "Initial cash per strategy (default $100)",
+            "default": 100,
+        },
+        "normalize": {
+            "type": "boolean",
+            "description": "Normalize all equity curves to start at 100 for fair comparison",
+            "default": False,
+        },
+        "show_trades": {
+            "type": "boolean",
+            "description": "Show trade markers on the chart",
+            "default": False,
+        },
+    },
+    "required": ["prompt"],
+    "additionalProperties": False,
+}
+
+
+class MultiBacktestInput(BaseModel):
+    """Schema for the v3 multi-strategy backtest tool."""
+
+    prompt: str = Field(
+        ...,
+        description="User's EXACT request - do not rephrase. Can include multiple strategies and benchmarks.",
+    )
+    symbols: Optional[List[str]] = Field(
+        default=None,
+        description="Default symbols if not in prompt",
+    )
+    timeframe: str = Field(
+        default="1Day",
+        description="Data timeframe",
+    )
+    start: Optional[str] = Field(
+        default=None,
+        description="ISO8601 start datetime",
+    )
+    end: Optional[str] = Field(
+        default=None,
+        description="ISO8601 end datetime",
+    )
+    init_cash: float = Field(
+        default=100.0,
+        ge=1,
+        description="Initial cash per strategy",
+    )
+    normalize: bool = Field(
+        default=False,
+        description="Normalize curves to start at 100",
+    )
+    show_trades: bool = Field(
+        default=False,
+        description="Show trade markers",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# =============================================================================
+# V2 Single-Strategy Tool (legacy, still supported)
+# =============================================================================
 
 BACKTEST_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -373,6 +505,151 @@ def _build_data_dict(
     return data_dict
 
 
+def _fetch_data_for_slot(
+    symbol: str,
+    slot_schema: Dict[str, Any],
+    start: Optional[str],
+    end: Optional[str],
+    target_frequency: str = "1Day",
+) -> pd.DataFrame:
+    """Fetch data for a single slot using the appropriate provider.
+
+    This function uses the provider registry to determine which provider
+    to use based on the data_type in the slot schema.
+
+    Args:
+        symbol: Ticker symbol to fetch.
+        slot_schema: Schema for the slot (contains data_type, frequency).
+        start: Start datetime (ISO8601 or datetime).
+        end: End datetime.
+        target_frequency: Target frequency for resampling.
+
+    Returns:
+        DataFrame with data for the slot.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    data_type = slot_schema.get("data_type", "ohlcv")
+    source_freq = slot_schema.get("frequency", target_frequency)
+
+    # Get the appropriate provider
+    registry = get_provider_registry()
+    provider = registry.infer_provider(slot_schema)
+
+    logger.info(f"    Fetching {data_type} for {symbol} from {provider.name} provider")
+
+    # Parse dates
+    start_dt = parse_dt(start) if start else datetime.now(timezone.utc) - timedelta(days=365 * 10)
+    end_dt = parse_dt(end) if end else None
+
+    # Fetch data
+    df = provider.fetch(
+        symbol=symbol,
+        data_type=data_type,
+        start=start_dt,
+        end=end_dt,
+        frequency=source_freq,
+    )
+
+    # Resample to target frequency if needed
+    if source_freq != target_frequency:
+        df = resample_to_frequency(df, source_freq, target_frequency, data_type)
+        logger.info(f"    Resampled from {source_freq} to {target_frequency}: {len(df)} rows")
+
+    return df
+
+
+def _infer_symbol_from_slot_name(slot_name: str, symbols: List[str]) -> Optional[str]:
+    """Try to infer which symbol a slot refers to based on its name.
+
+    Examples:
+        - "aapl_prices" with symbols=["AAPL", "MSFT"] -> "AAPL"
+        - "msft_pe" with symbols=["AAPL", "MSFT"] -> "MSFT"
+        - "prices" with symbols=["SPY"] -> None (use positional)
+
+    Args:
+        slot_name: The slot name from data_schema.
+        symbols: List of available symbols.
+
+    Returns:
+        Matched symbol or None if no match found.
+    """
+    slot_lower = slot_name.lower()
+    for symbol in symbols:
+        symbol_lower = symbol.lower()
+        # Check if slot name starts with or contains the symbol
+        if slot_lower.startswith(symbol_lower) or f"_{symbol_lower}" in slot_lower:
+            return symbol
+    return None
+
+
+def _fetch_data_dict_from_schema(
+    data_schema: Dict[str, Any],
+    symbols: List[str],
+    start: Optional[str],
+    end: Optional[str],
+    timeframe: str = "1Day",
+    fallback_prices: Optional[Dict[str, pd.DataFrame]] = None,
+) -> Dict[str, pd.DataFrame]:
+    """Fetch all data required by a data_schema using appropriate providers.
+
+    Args:
+        data_schema: Dict mapping slot names to slot schemas.
+        symbols: List of symbols (mapped to slots by position or inferred from name).
+        start: Start date.
+        end: End date.
+        timeframe: Target timeframe.
+        fallback_prices: Pre-fetched OHLCV data to use as fallback.
+
+    Returns:
+        Dict mapping slot names to DataFrames.
+    """
+    data_dict = {}
+    slot_names = list(data_schema.keys())
+
+    # Track which slots we've assigned to which symbols for positional fallback
+    positional_index = 0
+
+    for slot_name in slot_names:
+        slot_schema = data_schema[slot_name]
+        data_type = slot_schema.get("data_type", "ohlcv")
+
+        # Try to infer symbol from slot name first (e.g., "aapl_prices" -> "AAPL")
+        symbol = _infer_symbol_from_slot_name(slot_name, symbols)
+
+        if symbol is None:
+            # Fall back to positional mapping
+            if positional_index < len(symbols):
+                symbol = symbols[positional_index]
+                positional_index += 1
+            else:
+                symbol = symbols[0]
+
+        logger.info(f"    Slot '{slot_name}' -> symbol '{symbol}' (data_type: {data_type})")
+
+        # For OHLCV data, try to use pre-fetched data first
+        if data_type == "ohlcv" and fallback_prices and symbol in fallback_prices:
+            logger.info(f"    Using pre-fetched OHLCV for {slot_name} ({symbol})")
+            data_dict[slot_name] = fallback_prices[symbol]
+        else:
+            # Fetch from provider
+            try:
+                df = _fetch_data_for_slot(
+                    symbol=symbol,
+                    slot_schema=slot_schema,
+                    start=start,
+                    end=end,
+                    target_frequency=timeframe,
+                )
+                data_dict[slot_name] = df
+                logger.info(f"    Fetched {data_type} for {slot_name} ({symbol}): {len(df)} rows")
+            except Exception as e:
+                logger.error(f"    Failed to fetch {data_type} for {slot_name} ({symbol}): {e}")
+                raise
+
+    return data_dict
+
+
 def _run_single_backtest(
     agent: CodexAgent,
     session: CodexSession,
@@ -517,7 +794,7 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
                 "error": validation_error,
                 "error_type": "ValidationError",
             })
-            agent.feed_validation_error(session, validation_error)
+            agent.feed_validation_error(session, validation_error or "Unknown validation error")
             continue
         logger.info("Code validation PASSED")
 
@@ -532,7 +809,7 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
                 "error": schema_error,
                 "error_type": "DataSchemaError",
             })
-            agent.feed_validation_error(session, schema_error)
+            agent.feed_validation_error(session, schema_error or "Unknown schema error")
             continue
         logger.info("Data schema validation PASSED")
 
@@ -825,6 +1102,16 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
         if is_multi_asset and direction == primary_direction and first_result is None:
             first_result = result
 
+    if first_result is None:
+        return {
+            "success": False,
+            "error": "No successful backtest results",
+            "symbol": ", ".join(payload.symbols),
+            "timeframe": payload.timeframe,
+            "data": [],
+            "equity_curves": {},
+        }
+
     result_dict = first_result.to_dict()
 
     # Downsample the data field to avoid MCP size limits
@@ -897,48 +1184,415 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
     return result_dict
 
 
-def format_result_text(result: Dict[str, Any]) -> str:
-    """Format backtest result as human-readable text."""
-    if not result.get("success", False):
-        attempts = result.get("attempts", 0)
-        return f"Backtest failed after {attempts} attempts: {result.get('error', 'Unknown error')}"
+def run_multi_backtest(payload: MultiBacktestInput) -> Dict[str, Any]:
+    """Execute the v3 multi-strategy backtest from tool input.
 
-    metrics = result.get("metrics", {})
+    This is the entry point for the multi_backtest MCP tool.
+    It calls run_multi_strategy_backtest and converts the result to a dict.
+
+    Args:
+        payload: MultiBacktestInput with prompt and options.
+
+    Returns:
+        Dictionary suitable for widget display.
+    """
+    result = run_multi_strategy_backtest(
+        prompt=payload.prompt,
+        symbols=payload.symbols,
+        timeframe=payload.timeframe,
+        start=payload.start,
+        end=payload.end,
+        init_cash=payload.init_cash,
+        normalize=payload.normalize,
+        show_trades=payload.show_trades,
+    )
+    return combined_result_to_dict(result)
+
+
+def run_multi_strategy_backtest(
+    prompt: str,
+    symbols: Optional[List[str]] = None,
+    timeframe: str = "1Day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    init_cash: float = 100.0,
+    normalize: bool = False,
+    show_trades: bool = False,
+) -> CombinedBacktestResult:
+    """Run the v3 multi-strategy backtest pipeline.
+
+    This function implements the new architecture where:
+    1. Strategy Planner parses user intent into multiple strategies
+    2. Each strategy is generated and run (potentially with multiple directions)
+    3. Results are combined into a unified output
+
+    Args:
+        prompt: Natural language description (can include multiple strategies).
+        symbols: Default symbols if not specified in prompt.
+        timeframe: Data timeframe.
+        start: Start date.
+        end: End date.
+        init_cash: Initial cash per strategy.
+        normalize: Whether to normalize all curves to start at 100.
+        show_trades: Whether to include trade markers.
+
+    Returns:
+        CombinedBacktestResult ready for widget display.
+    """
+    from .models import BacktestRunResult
+
+    logger.info("=" * 80)
+    logger.info("MULTI-STRATEGY BACKTEST PIPELINE (v3)")
+    logger.info("=" * 80)
+    logger.info(f"Prompt: {prompt}")
+    logger.info(f"Default symbols: {symbols}")
+    logger.info(f"Timeframe: {timeframe}")
+
+    # Default symbols if not provided
+    if not symbols:
+        symbols = ["SPY"]
+
+    # Step 1: Plan strategies
+    logger.info("-" * 40)
+    logger.info("Step 1: Planning strategies...")
+    try:
+        planner = get_strategy_planner()
+        planner_output = planner.plan(
+            prompt=prompt,
+            default_symbols=symbols,
+        )
+        logger.info(f"Planner output: {len(planner_output.strategies)} strategies")
+    except Exception as e:
+        logger.error(f"Strategy planning failed: {e}")
+        return CombinedBacktestResult(
+            success=False,
+            error=f"Strategy planning failed: {str(e)}",
+        )
+
+    # Collect all symbols needed across all strategies
+    all_symbols = set()
+    for spec in planner_output.strategies:
+        all_symbols.update(spec.symbols)
+    logger.info(f"Total symbols needed: {all_symbols}")
+
+    # Step 2: Fetch price data for all symbols
+    logger.info("-" * 40)
+    logger.info("Step 2: Fetching price data...")
+    try:
+        prices_by_symbol = _fetch_prices_for_symbols(
+            symbols=list(all_symbols),
+            timeframe_str=timeframe,
+            start=start,
+            end=end,
+        )
+        for sym, df in prices_by_symbol.items():
+            logger.info(f"  {sym}: {len(df)} bars")
+    except Exception as e:
+        logger.error(f"Failed to fetch price data: {e}")
+        return CombinedBacktestResult(
+            success=False,
+            error=f"Failed to fetch price data: {str(e)}",
+        )
+
+    # Step 3: Generate and run each strategy
+    logger.info("-" * 40)
+    logger.info("Step 3: Generating and running strategies...")
+
+    agent = get_codex_agent(model="gpt-5.1-codex-max", max_attempts=5)
+    executor = get_strategy_executor(init_cash=init_cash, timeout_seconds=60)
+
+    generated_strategies: List[GeneratedStrategy] = []
+    all_results: List[BacktestRunResult] = []
+
+    for spec in planner_output.strategies:
+        logger.info(f"Processing strategy: {spec.name}")
+        logger.info(f"  Symbols: {spec.symbols}")
+        logger.info(f"  Directions: {spec.directions}")
+
+        # Generate the strategy code via LLM
+        try:
+            session = agent.create_session_from_spec(spec)
+
+            # Iterative generation loop
+            success = False
+            for attempt in range(agent.max_attempts):
+                code = agent.generate(session)
+
+                # Validate
+                is_valid, val_error = agent.validate_code(code)
+                if not is_valid:
+                    agent.feed_validation_error(session, val_error or "Unknown validation error")
+                    continue
+
+                is_schema_valid, schema_error = agent.validate_data_schema(session.data_schema)
+                if not is_schema_valid:
+                    agent.feed_validation_error(session, schema_error or "Unknown schema error")
+                    continue
+
+                # Build data dict for this strategy using appropriate providers
+                logger.info(f"  Building data dict from schema: {session.data_schema}")
+                try:
+                    data_dict = _fetch_data_dict_from_schema(
+                        data_schema=session.data_schema,
+                        symbols=spec.symbols,
+                        start=start,
+                        end=end,
+                        timeframe=timeframe,
+                        fallback_prices=prices_by_symbol,  # Use pre-fetched OHLCV as fallback
+                    )
+                except Exception as e:
+                    logger.error(f"  Failed to fetch data: {e}")
+                    agent.feed_validation_error(session, f"Data fetch failed: {str(e)}")
+                    continue
+
+                if not data_dict:
+                    agent.feed_validation_error(session, "No data available for strategy")
+                    continue
+
+                # Test execution with first direction
+                first_direction = spec.directions[0]
+                test_result = executor.execute(
+                    code=code,
+                    prices=list(data_dict.values())[0],
+                    symbols=spec.symbols,
+                    timeframe=timeframe,
+                    params={},
+                    direction=first_direction,
+                    data=data_dict,
+                )
+
+                if test_result.success:
+                    success = True
+                    break
+                else:
+                    agent.feed_error(session, test_result.to_execution_result())
+
+            if not success:
+                logger.error(f"Failed to generate strategy: {spec.name}")
+                continue
+
+            # Create GeneratedStrategy
+            gen_strategy = GeneratedStrategy(
+                spec=spec,
+                code=code,
+                data_schema=session.data_schema,
+                param_schema=session.param_schema,
+                params=merge_params(session.param_schema, {}),
+            )
+            generated_strategies.append(gen_strategy)
+
+            # Run for each direction
+            for direction in spec.directions:
+                logger.info(f"  Running with direction: {direction}")
+                run_result = executor.execute_generated_strategy(
+                    strategy=gen_strategy,
+                    data_dict=data_dict,
+                    direction=direction,
+                )
+                all_results.append(run_result)
+                if run_result.success:
+                    for sym, sym_result in run_result.results_by_symbol.items():
+                        logger.info(
+                            f"    {sym}: Return={sym_result.metrics.total_return:.2%}"
+                        )
+                else:
+                    logger.warning(f"    Failed: {run_result.error}")
+
+        except Exception as e:
+            logger.error(f"Error processing strategy {spec.name}: {e}")
+            continue
+
+    if not all_results:
+        return CombinedBacktestResult(
+            success=False,
+            error="No strategies executed successfully",
+        )
+
+    # Step 4: Combine results
+    logger.info("-" * 40)
+    logger.info("Step 4: Combining results...")
+
+    display_config = DisplayConfig(
+        normalize=normalize,
+        show_trades=show_trades,
+    )
+
+    combined = combine_results(
+        results=all_results,
+        strategies=generated_strategies,
+        display_config=display_config,
+    )
+
+    # Downsample for widget
+    combined = downsample_combined_result(combined, max_points=500)
+
+    logger.info("=" * 80)
+    logger.info("MULTI-STRATEGY BACKTEST COMPLETE")
+    logger.info("=" * 80)
+    logger.info(f"Success: {combined.success}")
+    logger.info(f"Series count: {len(combined.series)}")
+    logger.info(f"Metrics rows: {len(combined.metrics_table)}")
+
+    return combined
+
+
+def combined_result_to_dict(result: CombinedBacktestResult) -> Dict[str, Any]:
+    """Convert CombinedBacktestResult to widget-compatible dict.
+
+    Args:
+        result: The combined result.
+
+    Returns:
+        Dict suitable for JSON serialization and widget consumption.
+    """
+    if not result.success:
+        return {
+            "success": False,
+            "error": result.error,
+            "series": [],
+            "metrics_table": [],
+            "strategies": [],
+            "meta": {},
+        }
+
+    # Build equity_curves for backward compatibility with widget
+    # Widget expects: {name: [{timestamp, value}, ...]}
+    equity_curves = {}
+    for s in result.series:
+        # Convert {time, value} to {timestamp, value}
+        equity_curves[s.name] = [
+            {"timestamp": d["time"], "value": d["value"]}
+            for d in s.data
+        ]
+
+    # Build metrics_by_symbol for backward compatibility
+    metrics_by_symbol = {}
+    for m in result.metrics_table:
+        metrics_by_symbol[m.name] = m.metrics
+
+    # Extract symbols list
+    symbols = list({s.symbol for s in result.series})
+
+    return {
+        "success": True,
+        # V3 format (new)
+        "series": [
+            {
+                "name": s.name,
+                "strategy_name": s.strategy_name,
+                "symbol": s.symbol,
+                "direction": s.direction,
+                "data": s.data,
+                "trades": s.trades,
+            }
+            for s in result.series
+        ],
+        "metrics_table": [
+            {
+                "name": m.name,
+                "strategy_name": m.strategy_name,
+                "symbol": m.symbol,
+                "direction": m.direction,
+                "metrics": m.metrics,
+            }
+            for m in result.metrics_table
+        ],
+        "strategies": [
+            {
+                "name": st.name,
+                "description": st.description,
+                "code": st.code,
+                "data_schema": st.data_schema,
+                "param_schema": st.param_schema,
+                "params_used": st.params_used,
+                "execution": st.execution,
+            }
+            for st in result.strategies
+        ],
+        "meta": {
+            "timeframe": result.meta.timeframe,
+            "start_date": result.meta.start_date,
+            "end_date": result.meta.end_date,
+            "total_bars": result.meta.total_bars,
+            "num_strategies": result.meta.num_strategies,
+            "num_runs": result.meta.num_runs,
+        },
+        # V2 format (backward compatibility for widget)
+        "equity_curves": equity_curves,
+        "metrics_by_symbol": metrics_by_symbol,
+        "symbols": symbols,
+        "timeframe": result.meta.timeframe,
+    }
+
+
+def format_result_text(result: Dict[str, Any]) -> str:
+    """Format backtest result as human-readable text.
+
+    Handles both v3 format (series, metrics_table) and legacy v2 format.
+    """
+    if not result.get("success", False):
+        return f"Backtest failed: {result.get('error', 'Unknown error')}"
+
     meta = result.get("meta", {})
+    metrics_table = result.get("metrics_table", [])
+    strategies = result.get("strategies", [])
+    series = result.get("series", [])
+
+    # V3 format detection
+    is_v3 = bool(metrics_table) or bool(series)
+
+    if is_v3:
+        # V3 multi-strategy format
+        lines = [
+            "BACKTEST COMPLETE",
+            "",
+            f"Period: {meta.get('start_date', 'N/A')[:10]} to {meta.get('end_date', 'N/A')[:10]}",
+            f"Bars: {meta.get('total_bars', 'N/A')} | Strategies: {meta.get('num_strategies', len(strategies))} | Runs: {meta.get('num_runs', len(series))}",
+            "",
+        ]
+
+        if metrics_table:
+            lines.append("PERFORMANCE SUMMARY:")
+            for row in metrics_table:
+                m = row.get("metrics", {})
+                ret = m.get("total_return", 0)
+                sharpe = m.get("sharpe_ratio", 0)
+                trades = m.get("num_trades", 0)
+                max_dd = m.get("max_drawdown", 0)
+                lines.append(
+                    f"  {row.get('name', 'Unknown')}: "
+                    f"Return={ret:+.2%} | Sharpe={sharpe:.2f} | "
+                    f"Trades={trades} | MaxDD={max_dd:.2%}"
+                )
+            lines.append("")
+
+        if strategies:
+            lines.append("STRATEGIES:")
+            for s in strategies:
+                lines.append(f"  - {s.get('name', 'Unknown')}: {s.get('description', '')[:50]}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    # Legacy V2 format fallback
+    metrics = result.get("metrics", {})
     num_bars = len(result.get("data", []))
     attempts = result.get("attempts", 1)
     direction = result.get("direction", "longonly")
 
-    # Get position/signal counts
-    position_changes = metrics.get("position_changes", 0)
-    long_entries = metrics.get("long_entries", 0)
-    long_exits = metrics.get("long_exits", 0)
-    short_entries = metrics.get("short_entries", 0)
-    short_exits = metrics.get("short_exits", 0)
-
-    # Get built-in execution params
-    exec_price = result.get("execution_price", "close")
-    stop_loss = result.get("stop_loss")
-    take_profit = result.get("take_profit")
-    trailing_stop = result.get("trailing_stop", False)
-    slippage = result.get("slippage", 0.0)
-
-    # Get symbols from various possible locations
     symbols = result.get("symbols", []) or meta.get("symbols", [])
     symbols_str = ", ".join(symbols) if symbols else "unknown"
 
-    # Get per-symbol metrics if available
     metrics_by_symbol = result.get("metrics_by_symbol", {})
 
     lines = [
-        f"✅ BACKTEST COMPLETE",
-        f"",
+        "BACKTEST COMPLETE",
+        "",
         f"Symbols: {symbols_str} | Timeframe: {result.get('timeframe', '1Day')} | Direction: {direction}",
         f"Data: {num_bars} bars | Generated in {attempts} attempt(s)",
-        f"",
+        "",
     ]
 
-    # Show per-symbol results if available
     if metrics_by_symbol:
         lines.append("RESULTS BY SYMBOL:")
         for sym, m in metrics_by_symbol.items():
@@ -949,7 +1603,6 @@ def format_result_text(result: Dict[str, Any]) -> str:
             lines.append(f"  {sym}: Return={ret:.2%} | Sharpe={sharpe:.2f} | Trades={trades} | MaxDD={max_dd:.2%}")
         lines.append("")
     else:
-        # Fallback to overall metrics
         lines.extend([
             f"Return: {metrics.get('total_return', 0):.2%} | Sharpe: {metrics.get('sharpe_ratio', 0):.2f}",
             f"Trades: {metrics.get('num_trades', 0)} | Win Rate: {metrics.get('win_rate', 0):.1%} | Max DD: {metrics.get('max_drawdown', 0):.2%}",
@@ -957,6 +1610,11 @@ def format_result_text(result: Dict[str, Any]) -> str:
         ])
 
     # Execution settings summary
+    exec_price = result.get("execution_price", "close")
+    slippage = result.get("slippage", 0.0)
+    stop_loss = result.get("stop_loss")
+    take_profit = result.get("take_profit")
+
     exec_parts = [f"Execution: {exec_price}"]
     if slippage and slippage > 0:
         exec_parts.append(f"Slippage: {slippage*10000:.0f}bps")
@@ -968,10 +1626,8 @@ def format_result_text(result: Dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "📊 Full results with equity curves are displayed in the widget above.",
-        "📋 Strategy parameters and generated code are available in the widget's 'Parameters for Reproducibility' section.",
-        "",
-        "💡 To modify this strategy, pass the generated code as 'base_code' in the next backtest call.",
+        "Full results with equity curves are displayed in the widget above.",
+        "Strategy parameters and generated code are available in the widget's 'Strategy Details' section.",
     ])
 
     return "\n".join(lines)

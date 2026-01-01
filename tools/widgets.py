@@ -62,7 +62,7 @@ WIDGET_TOOL_SCHEMA: Dict[str, Any] = {
 
 
 def get_widgets() -> List[Widget]:
-    """Get all available widgets."""
+    """Get all available widgets (for resources)."""
     return [
         Widget(
             identifier="backtesting-widget",
@@ -83,6 +83,12 @@ def get_widgets() -> List[Widget]:
             response_text="Rendered the equity price view.",
         ),
     ]
+
+
+# Widget identifiers that should NOT be exposed as standalone tools.
+# These widgets are rendered via outputTemplate from other tools (e.g., backtest).
+# Exposing them as tools causes ChatGPT to call them redundantly.
+WIDGETS_NOT_AS_TOOLS = {"backtesting-widget"}
 
 
 def resource_description(widget: Widget) -> str:

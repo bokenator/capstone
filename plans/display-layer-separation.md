@@ -574,42 +574,49 @@ class DisplayConfig:
 
 ## Implementation Plan
 
-### Phase 1: Data Structures
-- [ ] Define `StrategySpec`, `GeneratedStrategy`, `BacktestResult`, `CombinedBacktestResult`
-- [ ] Create Pydantic models for validation
+### Phase 1: Data Structures ✅
+- [x] Define `StrategySpec`, `GeneratedStrategy`, `BacktestResult`, `CombinedBacktestResult`
+- [x] Create Pydantic models for validation
+- Created `tools/models.py` with all v3 data structures
 
-### Phase 2: Strategy Planner
-- [ ] Create planner prompt that outputs `List[StrategySpec]`
-- [ ] Handle common patterns: single strategy, with benchmark, comparisons
-- [ ] Planner determines slippage (0 for benchmarks, user-specified for primary)
+### Phase 2: Strategy Planner ✅
+- [x] Create planner prompt that outputs `List[StrategySpec]`
+- [x] Handle common patterns: single strategy, with benchmark, comparisons
+- [x] Planner determines slippage (0 for benchmarks, user-specified for primary)
+- Created `tools/strategy_planner.py` with LLM-powered planning
 
-### Phase 3: Refactor Strategy Generator
-- [ ] Accept `StrategySpec` as input instead of raw prompt
-- [ ] Generate all strategies via LLM
-- [ ] Return `GeneratedStrategy`
+### Phase 3: Refactor Strategy Generator ✅
+- [x] Accept `StrategySpec` as input instead of raw prompt
+- [x] Generate all strategies via LLM
+- [x] Return `GeneratedStrategy`
+- Added `create_session_from_spec()` and `generate_from_spec()` to `CodexAgent`
 
-### Phase 4: Refactor Backtest Engine
-- [ ] Accept `GeneratedStrategy` as input
-- [ ] Return structured `BacktestResult`
-- [ ] Add enhanced metrics (CAGR, Calmar, etc.)
-- [ ] Store trade records
+### Phase 4: Refactor Backtest Engine ✅
+- [x] Accept `GeneratedStrategy` as input
+- [x] Return structured `BacktestResult`
+- [x] Add enhanced metrics (CAGR, Calmar, etc.)
+- [x] Store trade records
+- Added `execute_generated_strategy()` to `StrategyExecutor`
 
-### Phase 5: Result Combiner
-- [ ] Create `combine_results()` function
-- [ ] Align timestamps across strategies
-- [ ] Compute relative metrics vs benchmark
-- [ ] Handle normalization
+### Phase 5: Result Combiner ✅
+- [x] Create `combine_results()` function
+- [x] Align timestamps across strategies
+- [x] Compute relative metrics vs benchmark
+- [x] Handle normalization
+- Created `tools/result_combiner.py`
 
-### Phase 6: Tool Integration
-- [ ] Update backtest tool to use new pipeline
-- [ ] Parse display preferences from user prompt or defaults
-- [ ] Wire everything together
+### Phase 6: Tool Integration ✅
+- [x] Update backtest tool to use new pipeline
+- [x] Parse display preferences from user prompt or defaults
+- [x] Wire everything together
+- Added `run_multi_strategy_backtest()` and `combined_result_to_dict()` to `backtest.py`
 
-### Phase 7: Widget Updates
-- [ ] Update widget for new data structure
-- [ ] Color-code by strategy order (1st = blue, 2nd = green, etc.)
-- [ ] Show strategy name in legend
-- [ ] Expandable strategy details section
+### Phase 7: Widget Updates ✅
+- [x] Update widget for new data structure
+- [x] Color-code by strategy order (1st = blue, 2nd = green, etc.)
+- [x] Show strategy name in legend
+- [x] Expandable strategy details section
+- Updated `assets/backtesting-widget.html` with Lightweight Charts
 
 ## Key Decisions
 

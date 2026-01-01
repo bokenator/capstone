@@ -17,9 +17,12 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from openai import OpenAI
+
+if TYPE_CHECKING:
+    from .models import GeneratedStrategy, StrategySpec
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -53,15 +56,27 @@ OUTPUT FORMAT - You MUST output valid JSON with exactly these fields:
 }
 
 DATA_SCHEMA REQUIREMENTS:
-- IMPORTANT: Only OHLCV price data is available. NO fundamental data (P/E ratios, earnings, balance sheet, etc.)
-- Strategies must use ONLY price-based indicators (MA, RSI, MACD, Bollinger Bands, ATR, etc.)
-- Define ALL data slots your strategy needs (e.g., "prices" for OHLCV data)
+- Define ALL data slots your strategy needs
 - For single-asset strategies, use "prices" as the slot name
 - For multi-asset strategies, use descriptive names like "asset_a", "asset_b", "benchmark"
+- For fundamental data, use descriptive names like "pe_data", "metrics"
 - Symbols are injected at runtime - NEVER hardcode symbols in your code
-- frequency: "1Day" for daily, "1Hour" for hourly, "1Week" for weekly
-- data_type: MUST be "ohlcv" (only type supported)
-- columns: MUST be ["open", "high", "low", "close", "volume"]
+
+AVAILABLE DATA TYPES:
+
+1. OHLCV Price Data (from Alpaca):
+   - data_type: "ohlcv"
+   - columns: ["open", "high", "low", "close", "volume"]
+   - frequency: "1Day", "1Hour", "1Week", "1Month"
+   - Use for: price-based indicators (MA, RSI, MACD, Bollinger Bands, ATR, etc.)
+
+2. Fundamental Data (from Financial Modeling Prep):
+   - data_type: "pe_ratio" - Daily P/E ratios (columns: ["pe_ratio"])
+   - data_type: "key_metrics" - Quarterly metrics (columns: ["peRatio", "pbRatio", "debtToEquity", etc.])
+   - data_type: "ratios" - Financial ratios (columns: various)
+   - data_type: "earnings" - Earnings data
+   - frequency: "quarterly" for key_metrics, "1Day" for pe_ratio (forward-filled)
+   - Use for: valuation-based strategies, fundamental analysis
 
 PARAM_SCHEMA REQUIREMENTS:
 - Define ONLY STRATEGY-SPECIFIC parameters (e.g., fast_window, rsi_threshold)
@@ -200,6 +215,48 @@ EXAMPLE JSON OUTPUT - Pairs Trading (Multi-Asset):
         }
     },
     "code": "def generate_signals(data: dict, params: dict) -> dict[str, pd.Series]:\\n    a = data['asset_a']['close']\\n    b = data['asset_b']['close']\\n\\n    zscore_entry = params.get('zscore_entry', 2.0)\\n    zscore_exit = params.get('zscore_exit', 0.5)\\n    lookback = params.get('lookback', 20)\\n\\n    spread = a / b\\n    spread_mean = spread.rolling(lookback).mean()\\n    spread_std = spread.rolling(lookback).std()\\n    zscore = (spread - spread_mean) / spread_std\\n\\n    pos_a = pd.Series(np.nan, index=a.index)\\n    pos_b = pd.Series(np.nan, index=b.index)\\n\\n    low_spread = zscore < -zscore_entry\\n    pos_a[low_spread] = 1\\n    pos_b[low_spread] = -1\\n\\n    high_spread = zscore > zscore_entry\\n    pos_a[high_spread] = -1\\n    pos_b[high_spread] = 1\\n\\n    normalized = abs(zscore) < zscore_exit\\n    pos_a[normalized] = 0\\n    pos_b[normalized] = 0\\n\\n    pos_a = pos_a.ffill().fillna(0)\\n    pos_b = pos_b.ffill().fillna(0)\\n\\n    return {\\"asset_a\\": pos_a, \\"asset_b\\": pos_b}"
+}
+
+EXAMPLE JSON OUTPUT - Buy and Hold (TRIVIAL - always long):
+{
+    "data_schema": {
+        "prices": {
+            "frequency": "1Day",
+            "columns": ["open", "high", "low", "close", "volume"],
+            "data_type": "ohlcv",
+            "description": "Daily OHLCV price data"
+        }
+    },
+    "param_schema": {},
+    "code": "def generate_signals(data: dict, params: dict) -> dict[str, pd.Series]:\\n    prices = data['prices']\\n    # Buy and hold: always maintain full long position\\n    position = pd.Series(1.0, index=prices.index, dtype=float)\\n    return {\\"prices\\": position}"
+}
+
+EXAMPLE JSON OUTPUT - PE Valuation Strategy (Fundamental Data):
+{
+    "data_schema": {
+        "prices": {
+            "frequency": "1Day",
+            "columns": ["open", "high", "low", "close", "volume"],
+            "data_type": "ohlcv",
+            "description": "Daily OHLCV price data for execution"
+        },
+        "pe_data": {
+            "frequency": "1Day",
+            "columns": ["pe_ratio"],
+            "data_type": "pe_ratio",
+            "description": "Daily PE ratios from FMP (forward-filled from quarterly)"
+        }
+    },
+    "param_schema": {
+        "pe_threshold": {
+            "type": "float",
+            "default": 50.0,
+            "min": 5,
+            "max": 200,
+            "description": "PE threshold - go long when PE is below this, exit when above"
+        }
+    },
+    "code": "def generate_signals(data: dict, params: dict) -> dict[str, pd.Series]:\\n    prices = data['prices']\\n    pe_data = data['pe_data']\\n\\n    pe_threshold = params.get('pe_threshold', 50.0)\\n\\n    # Get PE ratio series and align to price index\\n    pe = pe_data['pe_ratio'].reindex(prices.index, method='ffill')\\n\\n    position = pd.Series(np.nan, index=prices.index, dtype=float)\\n    position[pe < pe_threshold] = 1  # Go long when PE is low (cheap)\\n    position[pe >= pe_threshold] = 0  # Exit when PE is high (expensive)\\n    position = position.ffill().fillna(0)\\n\\n    return {\\"prices\\": position}"
 }
 
 POSITION TARGET FORMAT:
@@ -379,7 +436,7 @@ Respond with valid JSON containing data_schema, param_schema, and code fields.""
 
         try:
             logger.info("Calling OpenAI Responses API...")
-            response = self.client.responses.create(
+            response = self.client.responses.create(  # type: ignore[call-overload]
                 model=self.model,
                 instructions=system_instruction,
                 input=input_messages,
@@ -659,8 +716,18 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
         if not data_schema:
             return False, "data_schema cannot be empty"
 
-        valid_data_types = {"ohlcv"}  # Only OHLCV price data is supported
-        valid_frequencies = {"1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month"}
+        # Supported data types from all providers
+        # - Alpaca: ohlcv
+        # - FMP: pe_ratio, key_metrics, ratios, earnings, fundamental
+        valid_data_types = {
+            "ohlcv",           # Alpaca - OHLCV price data
+            "pe_ratio",        # FMP - Daily PE ratios
+            "key_metrics",     # FMP - Quarterly key metrics
+            "ratios",          # FMP - Financial ratios
+            "earnings",        # FMP - Earnings data
+            "fundamental",     # FMP - General fundamental data
+        }
+        valid_frequencies = {"1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month", "quarterly"}
 
         for slot_name, definition in data_schema.items():
             if not isinstance(definition, dict):
@@ -682,10 +749,10 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
             if not isinstance(columns, list):
                 return False, f"Data slot '{slot_name}' columns must be a list"
 
-            # Validate data_type - ONLY ohlcv is supported
+            # Validate data_type
             data_type = definition.get("data_type", "ohlcv")
             if data_type not in valid_data_types:
-                return False, f"Data slot '{slot_name}' has unsupported data_type '{data_type}'. Only 'ohlcv' price data is available. Rewrite your strategy to use only price-based indicators (MA, RSI, MACD, etc.) instead of fundamental data."
+                return False, f"Data slot '{slot_name}' has unsupported data_type '{data_type}'. Supported types: {valid_data_types}"
 
         return True, None
 
@@ -699,7 +766,7 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
 
         # If no code block, look for function definition
         lines = raw_response.strip().split('\n')
-        code_lines = []
+        code_lines: List[str] = []
         in_function = False
         indent_level = 0
 
@@ -721,6 +788,117 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
             return '\n'.join(code_lines)
 
         return raw_response.strip()
+
+
+    def create_session_from_spec(
+        self,
+        spec: "StrategySpec",
+        base_code: Optional[str] = None,
+    ) -> CodexSession:
+        """Create a new Codex session from a StrategySpec.
+
+        Args:
+            spec: Strategy specification with name, description, symbols, etc.
+            base_code: Optional existing strategy code to modify.
+
+        Returns:
+            CodexSession with initialized conversation.
+        """
+        # Import here to avoid circular import
+        from .models import StrategySpec
+
+        logger.info("=" * 60)
+        logger.info("CREATING SESSION FROM STRATEGY SPEC")
+        logger.info("=" * 60)
+        logger.info(f"Strategy name: {spec.name}")
+        logger.info(f"Description: {spec.description}")
+        logger.info(f"Symbols: {spec.symbols}")
+        logger.info(f"Directions: {spec.directions}")
+
+        session = CodexSession(max_attempts=self.max_attempts)
+
+        # Build detailed prompt from spec
+        prompt_parts = [f"Create a trading strategy: {spec.description}"]
+        prompt_parts.append(f"Strategy name: {spec.name}")
+        prompt_parts.append(f"Target symbols: {', '.join(spec.symbols)}")
+
+        if len(spec.symbols) > 1:
+            prompt_parts.append(
+                "This is a multi-asset strategy. Use separate data slots for each asset."
+            )
+
+        if base_code:
+            logger.info("Mode: MODIFICATION (modifying existing strategy)")
+            user_message = f"""Modify this existing trading strategy:
+
+```python
+{base_code}
+```
+
+Requested changes: {spec.description}
+
+Respond with valid JSON containing data_schema, param_schema, and code fields."""
+        else:
+            logger.info("Mode: CREATION (generating new strategy)")
+            user_message = "\n".join(prompt_parts)
+            user_message += "\n\nRespond with valid JSON containing data_schema, param_schema, and code fields."
+
+        session.messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+        logger.info("Session created successfully")
+        return session
+
+    def generate_from_spec(
+        self,
+        spec: "StrategySpec",
+        base_code: Optional[str] = None,
+    ) -> "GeneratedStrategy":
+        """Generate a complete GeneratedStrategy from a StrategySpec.
+
+        This is a convenience method that creates a session, generates code,
+        and returns a GeneratedStrategy object.
+
+        Args:
+            spec: Strategy specification.
+            base_code: Optional existing code to modify.
+
+        Returns:
+            GeneratedStrategy with code and schemas.
+
+        Raises:
+            ValueError: If code generation fails after max attempts.
+        """
+        # Import here to avoid circular import
+        from .models import GeneratedStrategy
+
+        session = self.create_session_from_spec(spec, base_code)
+
+        # Generate code
+        code = self.generate(session)
+
+        # Validate code
+        is_valid, validation_error = self.validate_code(code)
+        if not is_valid:
+            raise ValueError(f"Generated code failed validation: {validation_error}")
+
+        # Validate schemas
+        is_data_valid, data_error = self.validate_data_schema(session.data_schema)
+        if not is_data_valid:
+            raise ValueError(f"Generated data schema failed validation: {data_error}")
+
+        is_param_valid, param_error = self.validate_param_schema(session.param_schema)
+        if not is_param_valid:
+            raise ValueError(f"Generated param schema failed validation: {param_error}")
+
+        return GeneratedStrategy(
+            spec=spec,
+            code=code,
+            data_schema=session.data_schema,
+            param_schema=session.param_schema,
+            params={},  # Will be populated by caller with merged params
+        )
 
 
 def get_codex_agent(

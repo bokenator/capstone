@@ -26,6 +26,7 @@ from tools import (
     EQUITY_TOOL_SCHEMA,
     MIME_TYPE,
     WIDGET_TOOL_SCHEMA,
+    WIDGETS_NOT_AS_TOOLS,
     BacktestInput,
     EquityPricesInput,
     Widget,
@@ -55,6 +56,9 @@ mcp = FastMCP(name="backtesting-mcp", stateless_http=True)
 
 @mcp._mcp_server.list_tools()
 async def _list_tools() -> List[types.Tool]:
+    # Only expose widgets that are NOT in the exclusion list as tools.
+    # Widgets like backtesting-widget are rendered via outputTemplate from
+    # the backtest tool, so exposing them as standalone tools causes duplicate calls.
     tools = [
         types.Tool(
             name=widget.identifier,
@@ -69,6 +73,7 @@ async def _list_tools() -> List[types.Tool]:
             ),
         )
         for widget in widgets
+        if widget.identifier not in WIDGETS_NOT_AS_TOOLS
     ]
     tools.append(
         types.Tool(
@@ -96,7 +101,7 @@ async def _list_tools() -> List[types.Tool]:
             description="Generate and run a custom trading strategy from natural language. Uses AI to create strategy code, then backtests it with vectorbt.",
             inputSchema=deepcopy(BACKTEST_TOOL_SCHEMA),
             _meta={
-                "openai/outputTemplate": "ui://widget/equity-chart.html",
+                "openai/outputTemplate": "ui://widget/backtesting-widget.html",
                 "openai/toolInvocation/invoking": "Generating and running strategy",
                 "openai/toolInvocation/invoked": "Backtest complete",
                 "openai/widgetAccessible": True,
@@ -198,7 +203,7 @@ async def _call_tool_request(req: types.CallToolRequest) -> types.ServerResult:
                     structuredContent=result,
                     isError=True,
                     _meta={
-                        "openai/outputTemplate": "ui://widget/equity-chart.html",
+                        "openai/outputTemplate": "ui://widget/backtesting-widget.html",
                         "openai/toolInvocation/invoking": "Generating and running strategy",
                         "openai/toolInvocation/invoked": "Backtest failed",
                     },
@@ -211,7 +216,7 @@ async def _call_tool_request(req: types.CallToolRequest) -> types.ServerResult:
                 content=[types.TextContent(type="text", text=text)],
                 structuredContent=result,
                 _meta={
-                    "openai/outputTemplate": "ui://widget/equity-chart.html",
+                    "openai/outputTemplate": "ui://widget/backtesting-widget.html",
                     "openai/toolInvocation/invoking": "Generating and running strategy",
                     "openai/toolInvocation/invoked": "Backtest complete",
                 },
