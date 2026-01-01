@@ -529,8 +529,15 @@ class StrategyExecutor:
         logger.info("Step 10: Extracting backtest results")
         try:
             equity = pf.value()
+
+            # Handle multi-asset portfolios: equity is a DataFrame, sum across columns for total
+            if isinstance(equity, pd.DataFrame):
+                total_equity = equity.sum(axis=1)
+            else:
+                total_equity = equity
+
             timestamps = []
-            for idx in equity.index:
+            for idx in total_equity.index:
                 if isinstance(idx, pd.Timestamp):
                     ts = idx.to_pydatetime()
                 elif isinstance(idx, datetime):
@@ -545,6 +552,9 @@ class StrategyExecutor:
             def safe_metric(func, default=0.0):
                 try:
                     val = func()
+                    # Handle multi-asset returns (may be Series)
+                    if isinstance(val, pd.Series):
+                        val = val.sum() if len(val) > 1 else val.iloc[0]
                     if pd.isna(val) or np.isinf(val):
                         return default
                     return float(val)
@@ -556,7 +566,7 @@ class StrategyExecutor:
 
             base_result.success = True
             base_result.timestamps = timestamps
-            base_result.equity_curve = [float(v) for v in equity.values]
+            base_result.equity_curve = [float(v) for v in total_equity.values]
             base_result.metrics = BacktestMetrics(
                 total_return=safe_metric(pf.total_return),
                 sharpe_ratio=safe_metric(pf.sharpe_ratio),
@@ -566,11 +576,17 @@ class StrategyExecutor:
                 num_trades=num_trades,
                 profit_factor=safe_metric(trades.profit_factor) if num_trades > 0 else 0.0,
             )
+            # Helper to safely convert counts that might be arrays or Series
+            def safe_int(val):
+                if isinstance(val, (pd.Series, np.ndarray)):
+                    return int(val.sum())
+                return int(val)
+
             base_result.position_changes = total_position_changes
-            base_result.long_entries = int(long_entry_count)
-            base_result.long_exits = int(long_exit_count)
-            base_result.short_entries = int(short_entry_count)
-            base_result.short_exits = int(short_exit_count)
+            base_result.long_entries = safe_int(long_entry_count)
+            base_result.long_exits = safe_int(long_exit_count)
+            base_result.short_entries = safe_int(short_entry_count)
+            base_result.short_exits = safe_int(short_exit_count)
 
             # Log final results
             logger.info("=" * 60)

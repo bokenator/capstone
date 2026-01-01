@@ -33,9 +33,9 @@ OUTPUT FORMAT - You MUST output valid JSON with exactly these fields:
 {
     "data_schema": {
         "slot_name": {
-            "frequency": "1Day|1Hour|1Week|quarterly",
+            "frequency": "1Day|1Hour|1Week",
             "columns": ["open", "high", "low", "close", "volume"],
-            "data_type": "ohlcv|fundamental",
+            "data_type": "ohlcv",
             "description": "What this data slot contains"
         }
     },
@@ -53,12 +53,15 @@ OUTPUT FORMAT - You MUST output valid JSON with exactly these fields:
 }
 
 DATA_SCHEMA REQUIREMENTS:
+- IMPORTANT: Only OHLCV price data is available. NO fundamental data (P/E ratios, earnings, balance sheet, etc.)
+- Strategies must use ONLY price-based indicators (MA, RSI, MACD, Bollinger Bands, ATR, etc.)
 - Define ALL data slots your strategy needs (e.g., "prices" for OHLCV data)
 - For single-asset strategies, use "prices" as the slot name
-- For multi-asset strategies, use descriptive names like "asset_a", "asset_b"
+- For multi-asset strategies, use descriptive names like "asset_a", "asset_b", "benchmark"
 - Symbols are injected at runtime - NEVER hardcode symbols in your code
-- frequency: "1Day" for daily, "1Hour" for hourly, etc.
-- data_type: "ohlcv" for price data, "fundamental" for earnings/balance sheet
+- frequency: "1Day" for daily, "1Hour" for hourly, "1Week" for weekly
+- data_type: MUST be "ohlcv" (only type supported)
+- columns: MUST be ["open", "high", "low", "close", "volume"]
 
 PARAM_SCHEMA REQUIREMENTS:
 - Define ONLY STRATEGY-SPECIFIC parameters (e.g., fast_window, rsi_threshold)
@@ -281,14 +284,14 @@ class CodexAgent:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gpt-5.1",
+        model: str = "gpt-5.1-codex-max",
         max_attempts: int = 5,
     ):
         """Initialize the Codex agent.
 
         Args:
             api_key: OpenAI API key. If None, reads from OPENAI_API_KEY env var.
-            model: Model to use. Default is gpt-5.1 for code generation tasks.
+            model: Model to use. Default is gpt-5.1-codex-max for code generation tasks.
             max_attempts: Maximum number of generate-execute-fix cycles.
         """
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -334,11 +337,11 @@ class CodexAgent:
 
 Requested changes: {strategy_prompt}
 
-Output ONLY the modified Python function code."""
+Respond with valid JSON containing data_schema, param_schema, and code fields."""
         else:
             # Creation mode: generate new strategy
             logger.info("Mode: CREATION (generating new strategy)")
-            user_message = f"Create a trading strategy: {strategy_prompt}"
+            user_message = f"Create a trading strategy: {strategy_prompt}\n\nRespond with valid JSON containing data_schema, param_schema, and code fields."
 
         session.messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -364,21 +367,31 @@ Output ONLY the modified Python function code."""
         logger.info(f"Model: {self.model}")
         logger.info(f"Messages in conversation: {len(session.messages)}")
 
+        # Build input for Responses API
+        # First message is system prompt (instructions), rest are conversation
+        system_instruction = ""
+        input_messages = []
+        for msg in session.messages:
+            if msg["role"] == "system":
+                system_instruction = msg["content"]
+            else:
+                input_messages.append({"role": msg["role"], "content": msg["content"]})
+
         try:
-            logger.info("Calling OpenAI API...")
-            response = self.client.chat.completions.create(
+            logger.info("Calling OpenAI Responses API...")
+            response = self.client.responses.create(
                 model=self.model,
-                messages=session.messages,
-                temperature=0.2,
-                max_completion_tokens=4000,
-                response_format={"type": "json_object"},
+                instructions=system_instruction,
+                input=input_messages,
+                max_output_tokens=4000,
+                text={"format": {"type": "json_object"}},
             )
-            logger.info("OpenAI API call successful")
+            logger.info("OpenAI Responses API call successful")
         except Exception as e:
             logger.error(f"OpenAI API error: {type(e).__name__}: {e}")
             raise
 
-        raw_response = response.choices[0].message.content or ""
+        raw_response = response.output_text or ""
         logger.info(f"Raw response length: {len(raw_response)} chars")
 
         # Parse JSON response
@@ -646,8 +659,8 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
         if not data_schema:
             return False, "data_schema cannot be empty"
 
-        valid_data_types = {"ohlcv", "fundamental"}
-        valid_frequencies = {"1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month", "quarterly"}
+        valid_data_types = {"ohlcv"}  # Only OHLCV price data is supported
+        valid_frequencies = {"1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month"}
 
         for slot_name, definition in data_schema.items():
             if not isinstance(definition, dict):
@@ -669,10 +682,10 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
             if not isinstance(columns, list):
                 return False, f"Data slot '{slot_name}' columns must be a list"
 
-            # Validate data_type if present
+            # Validate data_type - ONLY ohlcv is supported
             data_type = definition.get("data_type", "ohlcv")
             if data_type not in valid_data_types:
-                return False, f"Data slot '{slot_name}' has invalid data_type '{data_type}'"
+                return False, f"Data slot '{slot_name}' has unsupported data_type '{data_type}'. Only 'ohlcv' price data is available. Rewrite your strategy to use only price-based indicators (MA, RSI, MACD, etc.) instead of fundamental data."
 
         return True, None
 
@@ -712,7 +725,7 @@ Output valid JSON with "data_schema", "param_schema", and "code" fields."""
 
 def get_codex_agent(
     api_key: Optional[str] = None,
-    model: str = "gpt-5.1",
+    model: str = "gpt-5.1-codex-max",
     max_attempts: int = 5,
 ) -> CodexAgent:
     """Factory function to create a CodexAgent instance."""

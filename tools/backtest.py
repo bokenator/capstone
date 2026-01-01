@@ -18,6 +18,7 @@ import logging
 from typing import Any, Dict, List, Optional, Union, cast
 
 import pandas as pd
+from alpaca.data.enums import Adjustment
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,7 +39,7 @@ BACKTEST_TOOL_SCHEMA: Dict[str, Any] = {
     "properties": {
         "prompt": {
             "type": "string",
-            "description": "Natural language description of the trading strategy to generate and test. Example: 'Buy when RSI drops below 30, sell when it rises above 70'. If base_code is provided, this describes the modifications to make.",
+            "description": "Natural language description of the trading strategy to generate and test. Example: 'Buy when RSI drops below 30, sell when it rises above 70'. When modifying an existing strategy via base_code, describe only the changes to make.",
         },
         "symbols": {
             "type": "array",
@@ -51,7 +52,7 @@ BACKTEST_TOOL_SCHEMA: Dict[str, Any] = {
         },
         "base_code": {
             "type": "string",
-            "description": "Optional existing strategy code to modify. If provided, the prompt should describe the changes to make. If not provided, a new strategy is created from scratch.",
+            "description": "IMPORTANT: When the user wants to modify, update, or build upon a previous strategy, you MUST pass the previous strategy's generated code here. Look for the code in the 'Parameters for Reproducibility' section of the previous backtest result. If the user says 'same strategy', 'modify', 'update', 'add shorts', 'change parameters', or references a previous backtest, extract and pass that code here. The prompt should then describe only the modifications.",
         },
         "params": {
             "type": "object",
@@ -142,7 +143,7 @@ class BacktestInput(BaseModel):
     )
     base_code: Optional[str] = Field(
         default=None,
-        description="Existing strategy code to modify. If provided, prompt describes changes to make.",
+        description="Previous strategy code to modify. MUST be provided when user wants to update/modify a previous backtest.",
     )
     params: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -309,6 +310,7 @@ def _fetch_prices_for_symbol(
         start=start_dt,
         end=end_dt,
         limit=limit,
+        adjustment=Adjustment.SPLIT,  # Use split-adjusted prices for accurate backtesting
     )
 
     bars = client.get_stock_bars(request)
@@ -422,7 +424,7 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
     # Initialize Codex agent and executor
     logger.info("-" * 40)
     logger.info("Initializing Codex agent and executor...")
-    agent = get_codex_agent(model="gpt-5.1", max_attempts=5)
+    agent = get_codex_agent(model="gpt-5.1-codex-max", max_attempts=5)
     executor = get_strategy_executor(init_cash=payload.init_cash, timeout_seconds=60)
     logger.info("Codex agent and executor initialized")
 
@@ -518,6 +520,21 @@ def run_backtest(payload: BacktestInput) -> Dict[str, Any]:
             agent.feed_validation_error(session, validation_error)
             continue
         logger.info("Code validation PASSED")
+
+        # Step 2b: Validate data_schema
+        logger.info("Step 2b: Validating data schema...")
+        is_schema_valid, schema_error = agent.validate_data_schema(session.data_schema)
+        if not is_schema_valid:
+            logger.warning(f"Data schema validation FAILED: {schema_error}")
+            all_attempts.append({
+                "attempt": session.attempts,
+                "code": code,
+                "error": schema_error,
+                "error_type": "DataSchemaError",
+            })
+            agent.feed_validation_error(session, schema_error)
+            continue
+        logger.info("Data schema validation PASSED")
 
         # Step 3: Check if this is a multi-asset strategy and build test data dict
         logger.info("Step 3: Executing strategy code...")
@@ -953,6 +970,8 @@ def format_result_text(result: Dict[str, Any]) -> str:
         "",
         "📊 Full results with equity curves are displayed in the widget above.",
         "📋 Strategy parameters and generated code are available in the widget's 'Parameters for Reproducibility' section.",
+        "",
+        "💡 To modify this strategy, pass the generated code as 'base_code' in the next backtest call.",
     ])
 
     return "\n".join(lines)
