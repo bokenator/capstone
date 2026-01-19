@@ -1,0 +1,49 @@
+{
+  "condition": "c1",
+  "complexity": "medium",
+  "run_number": 1,
+  "prompt_name": "MACD + ATR Trailing Stop",
+  "prompt_interface": "from_order_func(flexible=False)",
+  "max_turns": 10,
+  "submissions": 10,
+  "total_tokens": {
+    "input_tokens": 280609,
+    "output_tokens": 36176,
+    "total_tokens": 316785
+  },
+  "generation": {
+    "success": true,
+    "error": "Max turns (10) exceeded"
+  },
+  "verification": {
+    "success": false,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": false,
+        "errors": [
+          "Undeclared column access: 'Order_type' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_sig_err' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_sig' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_dir' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_attrs_err' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_dir_err' not in DATA_SCHEMA",
+          "Undeclared column access: 'Order_attrs' not in DATA_SCHEMA"
+        ]
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": false,
+    "error": "No successful verification",
+    "metrics": {}
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "condition": "c6",
+  "complexity": "complex",
+  "run_number": 1,
+  "prompt_name": "Pairs Trading",
+  "prompt_interface": "from_order_func(flexible=True)",
+  "max_turns": 10,
+  "submissions": 10,
+  "total_tokens": {
+    "input_tokens": 401375,
+    "output_tokens": 59748,
+    "total_tokens": 461123
+  },
+  "generation": {
+    "success": true,
+    "error": "Max turns (10) exceeded"
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": false,
+    "error": "Portfolio.from_order_func failed: order_records index out of range. Set a higher max_orders.\nTraceback (most recent call last):\n  File \"/root/wqu/capstone/w4/experiments_imp_2/backtests/complex.py\", line 174, in run_backtest\n    pf = vbt.Portfolio.from_order_func(\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w4/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/base.py\", line 3883, in from_order_func\n    order_records, log_records = simulate_func(\n                                 ^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w4/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/nb.py\", line 4371, in flex_simulate_nb\n    order_result, new_state = process_order_nb(\n                              ^^^^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w4/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/nb.py\", line 716, in process_order_nb\n    raise IndexError(\"order_records index out of range. Set a higher max_orders.\")\nIndexError: order_records index out of range. Set a higher max_orders.\n",
+    "metrics": {
+      "total_return": null,
+      "sharpe_ratio": null,
+      "max_drawdown": null,
+      "total_trades": null
+    }
+  }
+}
