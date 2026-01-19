@@ -532,9 +532,10 @@ class StrategyExecutor:
         logger.info("Step 10: Extracting backtest results")
         try:
             equity = pf.value()
+            is_multi_asset_portfolio = isinstance(equity, pd.DataFrame)
 
             # Handle multi-asset portfolios: equity is a DataFrame, sum across columns for total
-            if isinstance(equity, pd.DataFrame):
+            if is_multi_asset_portfolio:
                 total_equity = equity.sum(axis=1)
             else:
                 total_equity = equity
@@ -551,13 +552,13 @@ class StrategyExecutor:
                     ts = ts.replace(tzinfo=timezone.utc)
                 timestamps.append(ts.isoformat())
 
-            # Extract metrics safely
+            # Extract metrics safely for single-asset portfolios
             def safe_metric(func, default=0.0):
                 try:
                     val = func()
-                    # Handle multi-asset returns (may be Series)
+                    # Handle multi-asset returns (may be Series) - take mean for ratios
                     if isinstance(val, pd.Series):
-                        val = val.sum() if len(val) > 1 else val.iloc[0]
+                        val = val.mean() if len(val) > 1 else val.iloc[0]
                     if pd.isna(val) or np.isinf(val):
                         return default
                     return float(val)
@@ -567,18 +568,59 @@ class StrategyExecutor:
             trades = pf.trades
             num_trades = len(trades.records) if hasattr(trades, 'records') else 0
 
+            # For multi-asset portfolios, calculate metrics from total equity curve
+            # This gives the TRUE portfolio performance, not sum of individual assets
+            if is_multi_asset_portfolio:
+                # Total return from combined equity
+                initial_equity = total_equity.iloc[0]
+                final_equity = total_equity.iloc[-1]
+                portfolio_total_return = (final_equity - initial_equity) / initial_equity
+
+                # Calculate portfolio returns for Sharpe/Sortino
+                portfolio_returns = total_equity.pct_change().dropna()
+
+                # Sharpe ratio (annualized, assuming daily data)
+                if len(portfolio_returns) > 1 and portfolio_returns.std() > 0:
+                    sharpe = (portfolio_returns.mean() / portfolio_returns.std()) * np.sqrt(252)
+                else:
+                    sharpe = 0.0
+
+                # Sortino ratio (using downside deviation)
+                downside_returns = portfolio_returns[portfolio_returns < 0]
+                if len(downside_returns) > 0 and downside_returns.std() > 0:
+                    sortino = (portfolio_returns.mean() / downside_returns.std()) * np.sqrt(252)
+                else:
+                    sortino = sharpe  # Fallback to Sharpe if no downside
+
+                # Max drawdown from total equity
+                rolling_max = total_equity.cummax()
+                drawdown = (total_equity - rolling_max) / rolling_max
+                max_dd = drawdown.min()
+
+                portfolio_metrics = BacktestMetrics(
+                    total_return=float(portfolio_total_return),
+                    sharpe_ratio=float(sharpe) if not np.isnan(sharpe) else 0.0,
+                    sortino_ratio=float(sortino) if not np.isnan(sortino) else 0.0,
+                    max_drawdown=float(max_dd) if not np.isnan(max_dd) else 0.0,
+                    win_rate=safe_metric(trades.win_rate) if num_trades > 0 else 0.0,
+                    num_trades=num_trades,
+                    profit_factor=safe_metric(trades.profit_factor) if num_trades > 0 else 0.0,
+                )
+            else:
+                portfolio_metrics = BacktestMetrics(
+                    total_return=safe_metric(pf.total_return),
+                    sharpe_ratio=safe_metric(pf.sharpe_ratio),
+                    sortino_ratio=safe_metric(pf.sortino_ratio),
+                    max_drawdown=safe_metric(pf.max_drawdown),
+                    win_rate=safe_metric(trades.win_rate) if num_trades > 0 else 0.0,
+                    num_trades=num_trades,
+                    profit_factor=safe_metric(trades.profit_factor) if num_trades > 0 else 0.0,
+                )
+
             base_result.success = True
             base_result.timestamps = timestamps
             base_result.equity_curve = [float(v) for v in total_equity.values]
-            base_result.metrics = BacktestMetrics(
-                total_return=safe_metric(pf.total_return),
-                sharpe_ratio=safe_metric(pf.sharpe_ratio),
-                sortino_ratio=safe_metric(pf.sortino_ratio),
-                max_drawdown=safe_metric(pf.max_drawdown),
-                win_rate=safe_metric(trades.win_rate) if num_trades > 0 else 0.0,
-                num_trades=num_trades,
-                profit_factor=safe_metric(trades.profit_factor) if num_trades > 0 else 0.0,
-            )
+            base_result.metrics = portfolio_metrics
             # Helper to safely convert counts that might be arrays or Series
             def safe_int(val):
                 if isinstance(val, (pd.Series, np.ndarray)):
