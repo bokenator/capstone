@@ -1,0 +1,38 @@
+{
+  "condition": "c0",
+  "complexity": "complex",
+  "run_number": 0,
+  "mode": "verify-only",
+  "generation": {
+    "success": true,
+    "error": null
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": true,
+    "error": null,
+    "metrics": {
+      "total_return": 0.004791733535137728,
+      "sharpe_ratio": 0.48032869446136073,
+      "max_drawdown": 0.006075705562538952,
+      "total_trades": 7
+    }
+  }
+}

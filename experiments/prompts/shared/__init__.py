@@ -1,0 +1,112 @@
+"""
+Shared Prompt Components
+========================
+
+Common components used across multiple experimental conditions.
+"""
+
+from .invariant_tests import INVARIANT_TESTS
+from .vas import VAS_DESCRIPTION, VAS_SET
+from .schemas import (
+    DATA_SCHEMA_SIMPLE,
+    DATA_SCHEMA_MEDIUM,
+    DATA_SCHEMA_COMPLEX,
+    PARAM_SCHEMA_SIMPLE,
+    PARAM_SCHEMA_MEDIUM,
+    PARAM_SCHEMA_COMPLEX,
+    DATA_SCHEMA_SIMPLE_STR,
+    DATA_SCHEMA_MEDIUM_STR,
+    DATA_SCHEMA_COMPLEX_STR,
+    PARAM_SCHEMA_SIMPLE_STR,
+    PARAM_SCHEMA_MEDIUM_STR,
+    PARAM_SCHEMA_COMPLEX_STR,
+)
+from .signatures import (
+    SIGNATURE_SIMPLE,
+    SIGNATURE_MEDIUM,
+    SIGNATURE_COMPLEX,
+)
+from .strategy_base import (
+    STRATEGY_BASE_SIMPLE,
+    STRATEGY_BASE_MEDIUM,
+    STRATEGY_BASE_COMPLEX,
+    OUTPUT_SIMPLE,
+    OUTPUT_MEDIUM,
+    OUTPUT_COMPLEX,
+    ALLOWED_LIBS_SIMPLE,
+    ALLOWED_LIBS_MEDIUM,
+    ALLOWED_LIBS_COMPLEX,
+)
+from .api_citation import (
+    API_CITATION_SIMPLE,
+    API_CITATION_MEDIUM,
+    API_CITATION_COMPLEX,
+)
+from .strategy_tests import (
+    STRATEGY_TESTS_SIMPLE,
+    STRATEGY_TESTS_MEDIUM,
+    STRATEGY_TESTS_COMPLEX,
+)
+from .validation import (
+    VALIDATION_SCHEMA,
+    VALIDATION_VAS,
+    VALIDATION_TESTS,
+    VALIDATION_SCHEMA_VAS,
+    VALIDATION_SCHEMA_TESTS,
+    VALIDATION_VAS_TESTS,
+    VALIDATION_ALL,
+)
+
+__all__ = [
+    # Invariant tests
+    "INVARIANT_TESTS",
+    # VAS
+    "VAS_DESCRIPTION",
+    "VAS_SET",
+    # Schemas (dict form)
+    "DATA_SCHEMA_SIMPLE",
+    "DATA_SCHEMA_MEDIUM",
+    "DATA_SCHEMA_COMPLEX",
+    "PARAM_SCHEMA_SIMPLE",
+    "PARAM_SCHEMA_MEDIUM",
+    "PARAM_SCHEMA_COMPLEX",
+    # Schemas (string form for prompts)
+    "DATA_SCHEMA_SIMPLE_STR",
+    "DATA_SCHEMA_MEDIUM_STR",
+    "DATA_SCHEMA_COMPLEX_STR",
+    "PARAM_SCHEMA_SIMPLE_STR",
+    "PARAM_SCHEMA_MEDIUM_STR",
+    "PARAM_SCHEMA_COMPLEX_STR",
+    # Function signatures
+    "SIGNATURE_SIMPLE",
+    "SIGNATURE_MEDIUM",
+    "SIGNATURE_COMPLEX",
+    # Base strategy descriptions
+    "STRATEGY_BASE_SIMPLE",
+    "STRATEGY_BASE_MEDIUM",
+    "STRATEGY_BASE_COMPLEX",
+    # Output sections
+    "OUTPUT_SIMPLE",
+    "OUTPUT_MEDIUM",
+    "OUTPUT_COMPLEX",
+    # Allowed libraries
+    "ALLOWED_LIBS_SIMPLE",
+    "ALLOWED_LIBS_MEDIUM",
+    "ALLOWED_LIBS_COMPLEX",
+    # API citation requirements
+    "API_CITATION_SIMPLE",
+    "API_CITATION_MEDIUM",
+    "API_CITATION_COMPLEX",
+    # Strategy-specific tests
+    "STRATEGY_TESTS_SIMPLE",
+    "STRATEGY_TESTS_MEDIUM",
+    "STRATEGY_TESTS_COMPLEX",
+    # Validation requirements
+    "VALIDATION_SCHEMA",
+    "VALIDATION_VAS",
+    "VALIDATION_TESTS",
+    "VALIDATION_SCHEMA_VAS",
+    "VALIDATION_SCHEMA_TESTS",
+    "VALIDATION_VAS_TESTS",
+    "VALIDATION_ALL",
+]

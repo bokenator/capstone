@@ -1,0 +1,34 @@
+[project]
+name = "experiments-imp"
+version = "0.1.0"
+description = "Agentic Backtesting System with Schema-Constrained, Documentation-Grounded, and Test-Driven Code Generation"
+requires-python = ">=3.12"
+dependencies = [
+    "numba>=0.63.1",
+    "numpy>=2.3.5",
+    "openai-agents>=0.6.5",
+    "pandas>=2.3.3",
+    "scipy>=1.17.0",
+    "ta>=0.11.0",
+    "vectorbt>=0.28.2",
+]
+
+[project.scripts]
+run-experiment = "run_experiment:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backtests", "backtests.*", "common", "common.*", "prompts", "prompts.*", "verify", "verify.*"]
+
+[tool.setuptools]
+py-modules = ["run_experiment"]
