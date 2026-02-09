@@ -1,0 +1,28 @@
+{
+  "condition": "c2",
+  "complexity": "complex",
+  "run_number": 5,
+  "prompt_name": "Pairs Trading",
+  "prompt_interface": "from_order_func(flexible=True)",
+  "max_turns": 10,
+  "submissions": 0,
+  "total_tokens": {
+    "input_tokens": 75198,
+    "output_tokens": 3274,
+    "total_tokens": 78472
+  },
+  "generation": {
+    "success": false,
+    "error": "Max turns (10) exceeded"
+  },
+  "verification": {
+    "success": false,
+    "error": null,
+    "results": {}
+  },
+  "backtest": {
+    "success": false,
+    "error": "No successful verification",
+    "metrics": {}
+  }
+}

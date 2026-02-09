@@ -4,8 +4,7 @@ C6: Documentation + TDD Condition Prompts
 S=off, D=on, T=on
 
 Combines:
-- VAS (Verified API Surface) - only approved APIs allowed
-- Module-qualified API calls required
+- RAG-based documentation grounding via OpenSearch
 - Invariant tests (properties that must always hold)
 - Strategy-specific tests
 """
@@ -14,7 +13,7 @@ from .shared import (
     STRATEGY_BASE_SIMPLE,
     STRATEGY_BASE_MEDIUM,
     STRATEGY_BASE_COMPLEX,
-    VAS_DESCRIPTION,
+    RAG_DESCRIPTION,
     API_CITATION_SIMPLE,
     API_CITATION_MEDIUM,
     API_CITATION_COMPLEX,
@@ -37,14 +36,14 @@ from .shared import (
 
 STRATEGY_1_SIMPLE = (
     STRATEGY_BASE_SIMPLE
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_SIMPLE
     + INVARIANT_TESTS
     + STRATEGY_TESTS_SIMPLE
     + VALIDATION_VAS_TESTS
     + OUTPUT_SIMPLE
     + ALLOWED_LIBS_SIMPLE
-    + "\nGenerate the complete implementation using only VAS-approved APIs that passes all tests.\n"
+    + "\nGenerate the complete implementation that passes all tests. Search docs to verify each API.\n"
 )
 
 # =============================================================================
@@ -53,14 +52,14 @@ STRATEGY_1_SIMPLE = (
 
 STRATEGY_2_MEDIUM = (
     STRATEGY_BASE_MEDIUM
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_MEDIUM
     + INVARIANT_TESTS
     + STRATEGY_TESTS_MEDIUM
     + VALIDATION_VAS_TESTS
     + OUTPUT_MEDIUM
     + ALLOWED_LIBS_MEDIUM
-    + "\nGenerate the complete implementation using only VAS-approved APIs that passes all tests.\n"
+    + "\nGenerate the complete implementation that passes all tests. Search docs to verify each API.\n"
 )
 
 # =============================================================================
@@ -69,14 +68,14 @@ STRATEGY_2_MEDIUM = (
 
 STRATEGY_3_COMPLEX = (
     STRATEGY_BASE_COMPLEX
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_COMPLEX
     + INVARIANT_TESTS
     + STRATEGY_TESTS_COMPLEX
     + VALIDATION_VAS_TESTS
     + OUTPUT_COMPLEX
     + ALLOWED_LIBS_COMPLEX
-    + "\nGenerate the complete implementation using only VAS-approved APIs that passes all tests.\n"
+    + "\nGenerate the complete implementation that passes all tests. Search docs to verify each API.\n"
 )
 
 # =============================================================================

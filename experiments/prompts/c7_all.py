@@ -7,8 +7,7 @@ Combines all treatments:
 - DATA_SCHEMA: Required input data structure
 - PARAM_SCHEMA: Parameters with types, ranges, defaults
 - Function signatures with type hints
-- VAS (Verified API Surface) - only approved APIs allowed
-- Module-qualified API calls required
+- RAG-based documentation grounding via OpenSearch
 - Invariant tests (properties that must always hold)
 - Strategy-specific tests
 """
@@ -26,7 +25,7 @@ from .shared import (
     SIGNATURE_SIMPLE,
     SIGNATURE_MEDIUM,
     SIGNATURE_COMPLEX,
-    VAS_DESCRIPTION,
+    RAG_DESCRIPTION,
     API_CITATION_SIMPLE,
     API_CITATION_MEDIUM,
     API_CITATION_COMPLEX,
@@ -52,7 +51,7 @@ STRATEGY_1_SIMPLE = (
     + DATA_SCHEMA_SIMPLE_STR
     + PARAM_SCHEMA_SIMPLE_STR
     + SIGNATURE_SIMPLE
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_SIMPLE
     + INVARIANT_TESTS
     + STRATEGY_TESTS_SIMPLE
@@ -71,7 +70,7 @@ STRATEGY_2_MEDIUM = (
     + DATA_SCHEMA_MEDIUM_STR
     + PARAM_SCHEMA_MEDIUM_STR
     + SIGNATURE_MEDIUM
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_MEDIUM
     + INVARIANT_TESTS
     + STRATEGY_TESTS_MEDIUM
@@ -90,7 +89,7 @@ STRATEGY_3_COMPLEX = (
     + DATA_SCHEMA_COMPLEX_STR
     + PARAM_SCHEMA_COMPLEX_STR
     + SIGNATURE_COMPLEX
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_COMPLEX
     + INVARIANT_TESTS
     + STRATEGY_TESTS_COMPLEX

@@ -12,6 +12,7 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import sys
@@ -19,6 +20,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -31,9 +33,10 @@ sys.path.insert(0, str(EXPERIMENT_DIR))
 
 # Import agents (may not be installed)
 try:
-    from agents import Agent, Runner, RunConfig, function_tool, RunHooks, ModelSettings
+    from agents import Agent, ModelSettings, RunConfig, RunHooks, Runner, function_tool
     from agents.models.openai_provider import OpenAIProvider
     from openai.types.shared import Reasoning
+
     HAS_AGENTS = True
 except ImportError:
     HAS_AGENTS = False
@@ -46,14 +49,178 @@ except ImportError:
     ModelSettings = None  # type: ignore
     Reasoning = None  # type: ignore
 
+# Import OpenSearch client for RAG doc search (D-on conditions)
+try:
+    from opensearchpy import OpenSearch, RequestsHttpConnection
+    from requests_aws4auth import AWS4Auth
+
+    HAS_OPENSEARCH = True
+except ImportError:
+    HAS_OPENSEARCH = False
+
 # Configuration from environment
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_ENDPOINT = os.getenv("OPENAI_ENDPOINT")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
+# D-on conditions: these get an MCP server for documentation search
+D_ON_CONDITIONS = {"c2", "c4", "c6", "c7"}
+
+# AWS OpenSearch configuration (for RAG doc search in D-on conditions)
+AWS_OPENSEARCH_URL = os.getenv("AWS_OPENSEARCH_URL")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+
+# Auto-detect region from OpenSearch URL if not explicitly set
+def _detect_aws_region(url: str | None, default: str = "us-east-1") -> str:
+    if not url:
+        return default
+    m = re.search(r"\.([a-z]{2}-[a-z]+-\d+)\.(aoss|es)\.amazonaws\.com", url)
+    return m.group(1) if m else default
+
+
+AWS_REGION = os.getenv("AWS_REGION") or _detect_aws_region(AWS_OPENSEARCH_URL)
+
+RAG_INDEX_NAME = "library-docs"
+
+# Lazily-initialized OpenSearch client for doc search
+_opensearch_client: Optional["OpenSearch"] = None
+
+
+def _get_opensearch_client() -> "OpenSearch":
+    """Get or create an OpenSearch client with AWS SigV4 auth."""
+    global _opensearch_client
+    if _opensearch_client is not None:
+        return _opensearch_client
+
+    if not HAS_OPENSEARCH:
+        raise ImportError("opensearch-py and requests-aws4auth required")
+    if not AWS_OPENSEARCH_URL:
+        raise ValueError("AWS_OPENSEARCH_URL not set")
+
+    parsed = urlparse(AWS_OPENSEARCH_URL)
+    host = parsed.hostname
+    port = parsed.port or 443
+    service = "aoss" if host and ".aoss." in host else "es"
+
+    awsauth = AWS4Auth(
+        AWS_ACCESS_KEY_ID,
+        AWS_SECRET_ACCESS_KEY,
+        AWS_REGION,
+        service,
+    )
+
+    _opensearch_client = OpenSearch(
+        hosts=[{"host": host, "port": port}],
+        http_auth=awsauth,
+        use_ssl=True,
+        verify_certs=True,
+        connection_class=RequestsHttpConnection,
+        timeout=30,
+    )
+    return _opensearch_client
+
+
+from backtests import BACKTEST_FUNCTIONS, BacktestResult
 from common import VerificationResult
 from verify import CONDITION_MODULES
-from backtests import BACKTEST_FUNCTIONS, BacktestResult
+
+# =============================================================================
+# DOCUMENTATION SEARCH TOOL (for D-on conditions)
+# =============================================================================
+
+if HAS_AGENTS:
+
+    @function_tool
+    def search_docs(query: str, library: str = "") -> str:
+        """
+        Search library documentation for API details, function signatures, and usage examples.
+
+        Use this tool to verify that a third-party API exists and understand how to use it
+        correctly before writing code. Searches numpy, pandas, scipy, and vectorbt docs.
+
+        Args:
+            query: Search query describing the API or functionality you need
+                   (e.g., "RSI indicator", "rolling mean", "linear regression")
+            library: Optional library filter (numpy, pandas, scipy, vectorbt).
+                     Leave empty to search all libraries.
+
+        Returns:
+            Matching documentation entries with signatures, descriptions, and examples.
+        """
+        client = _get_opensearch_client()
+
+        # Build query
+        must_clauses = [
+            {
+                "multi_match": {
+                    "query": query,
+                    "fields": [
+                        "title^2",
+                        "object_name^2",
+                        "content",
+                        "signature",
+                        "parameters",
+                        "examples",
+                    ],
+                }
+            }
+        ]
+        if library:
+            must_clauses.append({"term": {"library": library.lower()}})
+
+        body = {
+            "query": {"bool": {"must": must_clauses}},
+            "size": 5,
+            "_source": [
+                "title",
+                "library",
+                "object_name",
+                "object_type",
+                "signature",
+                "content",
+                "parameters",
+                "returns",
+                "examples",
+            ],
+        }
+
+        resp = client.search(index=RAG_INDEX_NAME, body=body)
+        hits = resp.get("hits", {}).get("hits", [])
+        if not hits:
+            return f"No documentation found for: {query}"
+
+        results = []
+        for hit in hits:
+            src = hit["_source"]
+            parts = [f"## {src.get('title', src.get('object_name', 'Unknown'))}"]
+            parts.append(
+                f"Library: {src.get('library', '?')} | Type: {src.get('object_type', '?')}"
+            )
+            if src.get("signature"):
+                parts.append(f"Signature: {src['signature']}")
+            if src.get("content"):
+                # Truncate long content
+                content = src["content"]
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                parts.append(content)
+            if src.get("parameters"):
+                params = src["parameters"]
+                if len(params) > 400:
+                    params = params[:400] + "..."
+                parts.append(f"Parameters: {params}")
+            if src.get("returns"):
+                parts.append(f"Returns: {src['returns']}")
+            if src.get("examples"):
+                examples = src["examples"]
+                if len(examples) > 400:
+                    examples = examples[:400] + "..."
+                parts.append(f"Examples:\n{examples}")
+            results.append("\n".join(parts))
+
+        return "\n\n---\n\n".join(results)
 
 
 # =============================================================================
@@ -86,6 +253,7 @@ def get_experiment_dir(condition: str, complexity: str, run_number: int) -> Path
 # PROMPT LOADING
 # =============================================================================
 
+
 def load_prompt(condition: str, complexity: str) -> dict[str, Any]:
     """
     Load a prompt from the prompts module.
@@ -98,7 +266,11 @@ def load_prompt(condition: str, complexity: str) -> dict[str, Any]:
         Dict with 'name', 'interface', 'prompt' keys
     """
     condition_lower = condition.lower()
-    module_name = f"prompts.{condition_lower}_control" if condition_lower == "c0" else f"prompts.{condition_lower}_{'schema' if condition_lower == 'c1' else 'docs' if condition_lower == 'c2' else 'tdd' if condition_lower == 'c3' else 'schema_docs' if condition_lower == 'c4' else 'schema_tdd' if condition_lower == 'c5' else 'docs_tdd' if condition_lower == 'c6' else 'all'}"
+    module_name = (
+        f"prompts.{condition_lower}_control"
+        if condition_lower == "c0"
+        else f"prompts.{condition_lower}_{'schema' if condition_lower == 'c1' else 'docs' if condition_lower == 'c2' else 'tdd' if condition_lower == 'c3' else 'schema_docs' if condition_lower == 'c4' else 'schema_tdd' if condition_lower == 'c5' else 'docs_tdd' if condition_lower == 'c6' else 'all'}"
+    )
 
     # Map condition to module name
     CONDITION_TO_MODULE = {
@@ -120,7 +292,9 @@ def load_prompt(condition: str, complexity: str) -> dict[str, Any]:
     module = importlib.import_module(module_name)
 
     if complexity not in module.PROMPTS:
-        raise ValueError(f"Unknown complexity: {complexity}. Expected simple, medium, or complex.")
+        raise ValueError(
+            f"Unknown complexity: {complexity}. Expected simple, medium, or complex."
+        )
 
     return module.PROMPTS[complexity]
 
@@ -128,6 +302,7 @@ def load_prompt(condition: str, complexity: str) -> dict[str, Any]:
 # =============================================================================
 # AGENT SETUP
 # =============================================================================
+
 
 def get_openai_provider() -> "OpenAIProvider":
     """Create an OpenAI provider with configured endpoint and API key."""
@@ -146,6 +321,7 @@ def get_openai_provider() -> "OpenAIProvider":
 # =============================================================================
 # EXPERIMENT CONTEXT (for tool access)
 # =============================================================================
+
 
 class ExperimentContext:
     """Holds state for a single experiment run, accessible by tools."""
@@ -189,14 +365,16 @@ class TokenTrackingHooks(RunHooks):
             return
 
         # Extract usage from response
-        if hasattr(response, 'usage') and response.usage:
+        if hasattr(response, "usage") and response.usage:
             usage = response.usage
-            _current_context.input_tokens += getattr(usage, 'input_tokens', 0) or 0
-            _current_context.output_tokens += getattr(usage, 'output_tokens', 0) or 0
-            _current_context.total_tokens += getattr(usage, 'total_tokens', 0) or 0
+            _current_context.input_tokens += getattr(usage, "input_tokens", 0) or 0
+            _current_context.output_tokens += getattr(usage, "output_tokens", 0) or 0
+            _current_context.total_tokens += getattr(usage, "total_tokens", 0) or 0
 
 
-def _run_verification_internal(code_path: Path, condition: str, complexity: str) -> dict[str, VerificationResult]:
+def _run_verification_internal(
+    code_path: Path, condition: str, complexity: str
+) -> dict[str, VerificationResult]:
     """Internal verification runner."""
     condition_upper = condition.upper()
     verify_module = CONDITION_MODULES.get(condition_upper)
@@ -213,11 +391,14 @@ def _run_verification_internal(code_path: Path, condition: str, complexity: str)
         spec.loader.exec_module(generated_module)
     except Exception as e:
         result = VerificationResult(passed=False)
-        result.add_error(f"Failed to import generated code: {e}\n{traceback.format_exc()}")
+        result.add_error(
+            f"Failed to import generated code: {e}\n{traceback.format_exc()}"
+        )
         return {"schema": result, "documentation": result, "tests": result}
 
     # Load test data for TDD verification
     from backtests.shared import load_sample_data
+
     sample_data = load_sample_data(complexity)
 
     # Format test data based on complexity
@@ -270,7 +451,9 @@ def _run_backtest_internal(code_path: Path, complexity: str) -> BacktestResult:
     try:
         module = _load_strategy_module(code_path)
     except Exception as e:
-        result.error = f"Failed to import strategy module: {e}\n{traceback.format_exc()}"
+        result.error = (
+            f"Failed to import strategy module: {e}\n{traceback.format_exc()}"
+        )
         return result
 
     # Check for required functions
@@ -294,7 +477,7 @@ def _run_backtest_internal(code_path: Path, complexity: str) -> BacktestResult:
 
 def _log_status(msg: str) -> None:
     """Print a timestamped status message."""
-    timestamp = datetime.now().strftime('%H:%M:%S')
+    timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"    [{timestamp}] {msg}")
 
 
@@ -303,14 +486,18 @@ def _simplify_error(error: str) -> str:
     if not error:
         return error
     # Get just the first line or up to the traceback
-    lines = error.split('\n')
+    lines = error.split("\n")
     first_line = lines[0].strip()
     # If it's a traceback header, try to get the actual error
-    if first_line.startswith('Traceback'):
+    if first_line.startswith("Traceback"):
         # Find the last line which is usually the actual error
         for line in reversed(lines):
             line = line.strip()
-            if line and not line.startswith('File ') and not line.startswith('Traceback'):
+            if (
+                line
+                and not line.startswith("File ")
+                and not line.startswith("Traceback")
+            ):
                 return line
     return first_line
 
@@ -351,12 +538,14 @@ def submit_code(code: str) -> str:
 
     # Run verification
     try:
-        ctx.verify_results = _run_verification_internal(code_path, ctx.condition, ctx.complexity)
+        ctx.verify_results = _run_verification_internal(
+            code_path, ctx.condition, ctx.complexity
+        )
         verification_success = True
         verification_error = None
     except Exception as e:
         verification_success = False
-        verification_error = str(e).split('\n')[0]  # First line only
+        verification_error = str(e).split("\n")[0]  # First line only
         ctx.verify_results = {}
 
     # Log verification results
@@ -372,15 +561,19 @@ def submit_code(code: str) -> str:
                 err_summary = _simplify_error(err_summary)
                 num_errors = len(result.errors)
                 if num_errors > 1:
-                    _log_status(f"  {name}: {status} ({num_errors} errors, first: {err_summary})")
+                    _log_status(
+                        f"  {name}: {status} ({num_errors} errors, first: {err_summary})"
+                    )
                 else:
                     _log_status(f"  {name}: {status} ({err_summary})")
 
     # Run backtest only if ALL verifications passed (including tests)
     ctx.backtest_result = None
-    all_verifications_passed = verification_success and all(
-        r.passed for r in ctx.verify_results.values()
-    ) if ctx.verify_results else False
+    all_verifications_passed = (
+        verification_success and all(r.passed for r in ctx.verify_results.values())
+        if ctx.verify_results
+        else False
+    )
 
     if not ctx.skip_backtest and all_verifications_passed:
         try:
@@ -405,9 +598,11 @@ def submit_code(code: str) -> str:
             _log_status(f"  backtest: FAIL ({err_summary})")
 
     # Check if all passed
-    verification_passed = all(
-        r.passed for name, r in ctx.verify_results.items() if name != "tests"
-    ) if ctx.verify_results else False
+    verification_passed = (
+        all(r.passed for name, r in ctx.verify_results.items() if name != "tests")
+        if ctx.verify_results
+        else False
+    )
 
     backtest_passed = (
         ctx.backtest_result.success if ctx.backtest_result else ctx.skip_backtest
@@ -439,18 +634,26 @@ def submit_code(code: str) -> str:
         if ctx.backtest_result.success:
             lines.append("### Backtest: PASS")
             if ctx.backtest_result.total_return is not None:
-                lines.append(f"  - Total Return: {ctx.backtest_result.total_return:.2%}")
+                lines.append(
+                    f"  - Total Return: {ctx.backtest_result.total_return:.2%}"
+                )
             if ctx.backtest_result.sharpe_ratio is not None:
-                lines.append(f"  - Sharpe Ratio: {ctx.backtest_result.sharpe_ratio:.2f}")
+                lines.append(
+                    f"  - Sharpe Ratio: {ctx.backtest_result.sharpe_ratio:.2f}"
+                )
             # Trade statistics
             if ctx.backtest_result.total_trades is not None:
                 lines.append(f"  - Total Trades: {ctx.backtest_result.total_trades}")
             if ctx.backtest_result.win_rate is not None:
                 lines.append(f"  - Win Rate: {ctx.backtest_result.win_rate:.2%}")
             if ctx.backtest_result.profit_factor is not None:
-                lines.append(f"  - Profit Factor: {ctx.backtest_result.profit_factor:.2f}")
+                lines.append(
+                    f"  - Profit Factor: {ctx.backtest_result.profit_factor:.2f}"
+                )
             if ctx.backtest_result.avg_trade_return is not None:
-                lines.append(f"  - Avg Trade Return: {ctx.backtest_result.avg_trade_return:.2%}")
+                lines.append(
+                    f"  - Avg Trade Return: {ctx.backtest_result.avg_trade_return:.2%}"
+                )
         else:
             lines.append("### Backtest: FAIL")
             lines.append(f"  - Error: {ctx.backtest_result.error}")
@@ -458,12 +661,17 @@ def submit_code(code: str) -> str:
     if ctx.all_passed:
         lines.append("\n**All checks passed! Your code is complete.**")
     else:
-        lines.append("\n**Please fix the errors above and call submit_code again with corrected code.**")
+        lines.append(
+            "\n**Please fix the errors above and call submit_code again with corrected code.**"
+        )
 
     return "\n".join(lines)
 
 
-def create_code_generation_agent(condition: str, complexity: str) -> "Agent":
+def create_code_generation_agent(
+    condition: str,
+    complexity: str,
+) -> "Agent":
     """
     Create an OpenAI agent for code generation with tools.
 
@@ -472,7 +680,7 @@ def create_code_generation_agent(condition: str, complexity: str) -> "Agent":
         complexity: Complexity level (simple, medium, complex)
 
     Returns:
-        Configured Agent instance with submit_code tool
+        Configured Agent instance with submit_code tool (and search_docs for D-on)
 
     Raises:
         ImportError: If openai-agents package is not installed
@@ -483,9 +691,32 @@ def create_code_generation_agent(condition: str, complexity: str) -> "Agent":
             "Install with: pip install openai-agents"
         )
 
-    return Agent(
-        name=f"CodeGenerator_{condition}_{complexity}",
-        instructions="""You are an expert Python developer specializing in quantitative finance and algorithmic trading.
+    tools = [submit_code]
+
+    # For D-on conditions, add the doc search tool and adjust instructions
+    if condition.lower() in D_ON_CONDITIONS:
+        tools.append(search_docs)
+        instructions = """You are an expert Python developer specializing in quantitative finance and algorithmic trading.
+
+Your task is to generate clean, well-documented Python code for trading strategies using vectorbt.
+
+WORKFLOW:
+1. Read the strategy requirements carefully
+2. Optionally use search_docs to look up 1-3 unfamiliar APIs (especially vectorbt)
+3. Generate complete Python code and call submit_code IMMEDIATELY
+4. If there are errors, fix them and submit again
+5. Repeat until all checks pass
+
+CRITICAL: Your primary goal is to submit code. Do NOT spend more than 1-2 turns searching docs. Write your best attempt and submit it — you will get specific error feedback to iterate on.
+
+IMPORTANT RULES:
+1. Include all necessary imports at the top
+2. Follow the exact function signatures provided in the prompt
+3. Use type hints for all function parameters and return values
+4. Handle edge cases (NaN values, warmup periods, etc.)
+5. Always call submit_code to validate your code - do not just output code without testing it"""
+    else:
+        instructions = """You are an expert Python developer specializing in quantitative finance and algorithmic trading.
 
 Your task is to generate clean, well-documented Python code for trading strategies using vectorbt.
 
@@ -501,19 +732,21 @@ IMPORTANT RULES:
 2. Follow the exact function signatures provided in the prompt
 3. Use type hints for all function parameters and return values
 4. Handle edge cases (NaN values, warmup periods, etc.)
-5. Do NOT use any APIs or functions not specified in the prompt (if VAS is provided)
-6. Always call submit_code to validate your code - do not just output code without testing it""",
+5. Always call submit_code to validate your code - do not just output code without testing it"""
+
+    return Agent(
+        name=f"CodeGenerator_{condition}_{complexity}",
+        instructions=instructions,
         model=OPENAI_MODEL,
-        model_settings=ModelSettings(
-            reasoning=Reasoning(effort="high")
-        ),
-        tools=[submit_code],
+        model_settings=ModelSettings(reasoning=Reasoning(effort="high")),
+        tools=tools,
     )
 
 
 # =============================================================================
 # RUN NUMBER TRACKING
 # =============================================================================
+
 
 def get_next_run_number(condition: str, complexity: str) -> int:
     """
@@ -536,7 +769,7 @@ def get_next_run_number(condition: str, complexity: str) -> int:
     # Extract numbers from existing folders
     numbers = []
     for d in existing_dirs:
-        match = re.search(rf'{condition.lower()}_{complexity}_(\d+)$', d.name)
+        match = re.search(rf"{condition.lower()}_{complexity}_(\d+)$", d.name)
         if match:
             numbers.append(int(match.group(1)))
 
@@ -558,7 +791,7 @@ def extract_run_number_from_path(path: Path) -> Optional[int]:
     """
     # Pattern: {condition}_{complexity}_{number}
     name = path.name if isinstance(path, Path) else str(path)
-    match = re.search(r'_(\d+)$', name)
+    match = re.search(r"_(\d+)$", name)
     if match:
         return int(match.group(1))
     return None
@@ -567,6 +800,7 @@ def extract_run_number_from_path(path: Path) -> Optional[int]:
 # =============================================================================
 # VERIFICATION (standalone mode)
 # =============================================================================
+
 
 def run_verification(
     code_path: Path,
@@ -590,6 +824,7 @@ def run_verification(
 # =============================================================================
 # BACKTEST
 # =============================================================================
+
 
 def run_backtest(
     code_path: Path,
@@ -641,12 +876,13 @@ def save_experiment_results(
 # MAIN EXPERIMENT RUNNER
 # =============================================================================
 
+
 async def run_experiment_async(
     condition: str,
     complexity: str,
     verbose: bool = True,
     skip_backtest: bool = False,
-    max_turns: int = 10,
+    max_turns: int = 20,
     run_number: Optional[int] = None,
 ) -> dict[str, Any]:
     """
@@ -660,7 +896,7 @@ async def run_experiment_async(
         complexity: Complexity level (simple, medium, complex)
         verbose: Whether to print progress
         skip_backtest: Whether to skip running the backtest
-        max_turns: Maximum number of agent turns (default: 10)
+        max_turns: Maximum number of agent turns (default: 20)
         run_number: Specific run number to use (auto-increments if None)
 
     Returns:
@@ -673,18 +909,15 @@ async def run_experiment_async(
         run_number = get_next_run_number(condition, complexity)
 
     if verbose:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting experiment: {condition} / {complexity} (run #{run_number})")
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Starting experiment: {condition} / {complexity} (run #{run_number})"
+        )
         print(f"  Max turns: {max_turns}")
 
     # Load prompt
     if verbose:
         print(f"  Loading prompt...")
     prompt_data = load_prompt(condition, complexity)
-
-    # Create agent with tools
-    if verbose:
-        print(f"  Creating agent...")
-    agent = create_code_generation_agent(condition, complexity)
 
     # Set up experiment context for the submit_code tool
     _current_context = ExperimentContext(
@@ -702,7 +935,12 @@ async def run_experiment_async(
     run_config = RunConfig(model_provider=provider)
 
     generation_error = None
+    run_result = None
     try:
+        if verbose and condition.lower() in D_ON_CONDITIONS:
+            print(f"  Documentation search enabled (D=on, region={AWS_REGION})")
+        agent = create_code_generation_agent(condition, complexity)
+
         run_result = await Runner.run(
             agent,
             input=prompt_data["prompt"],
@@ -739,9 +977,11 @@ async def run_experiment_async(
 
     # Determine success
     generation_success = submission_count > 0
-    verification_success = all(
-        r.passed for name, r in verify_results.items() if name != "tests"
-    ) if verify_results else False
+    verification_success = (
+        all(r.passed for name, r in verify_results.items() if name != "tests")
+        if verify_results
+        else False
+    )
 
     # Compile results
     result = {
@@ -763,17 +1003,31 @@ async def run_experiment_async(
             "results": {
                 k: {"passed": v.passed, "errors": v.errors}
                 for k, v in verify_results.items()
-            } if verify_results else {},
+            }
+            if verify_results
+            else {},
         },
         "backtest": {
             "success": backtest_result.success if backtest_result else False,
-            "error": backtest_result.error if backtest_result else ("Skipped" if skip_backtest else "No successful verification"),
+            "error": backtest_result.error
+            if backtest_result
+            else ("Skipped" if skip_backtest else "No successful verification"),
             "metrics": {
-                "total_return": backtest_result.total_return if backtest_result else None,
-                "sharpe_ratio": backtest_result.sharpe_ratio if backtest_result else None,
-                "max_drawdown": backtest_result.max_drawdown if backtest_result else None,
-                "total_trades": backtest_result.total_trades if backtest_result else None,
-            } if backtest_result else {},
+                "total_return": backtest_result.total_return
+                if backtest_result
+                else None,
+                "sharpe_ratio": backtest_result.sharpe_ratio
+                if backtest_result
+                else None,
+                "max_drawdown": backtest_result.max_drawdown
+                if backtest_result
+                else None,
+                "total_trades": backtest_result.total_trades
+                if backtest_result
+                else None,
+            }
+            if backtest_result
+            else {},
         },
     }
 
@@ -783,7 +1037,9 @@ async def run_experiment_async(
     # Print final summary
     if verbose:
         status = "PASSED" if all_passed else "FAILED"
-        print(f"  Done: {status} ({submission_count} submissions, {total_tokens['total_tokens']} tokens)")
+        print(
+            f"  Done: {status} ({submission_count} submissions, {total_tokens['total_tokens']} tokens)"
+        )
         print()
 
     # Clear context
@@ -797,7 +1053,7 @@ def run_experiment(
     complexity: str,
     verbose: bool = True,
     skip_backtest: bool = False,
-    max_turns: int = 10,
+    max_turns: int = 20,
     run_number: Optional[int] = None,
 ) -> dict[str, Any]:
     """
@@ -808,20 +1064,23 @@ def run_experiment(
         complexity: Complexity level (simple, medium, complex)
         verbose: Whether to print progress
         skip_backtest: Whether to skip running the backtest
-        max_turns: Maximum number of agent turns (default: 10)
+        max_turns: Maximum number of agent turns (default: 20)
         run_number: Specific run number to use (auto-increments if None)
 
     Returns:
         Dict with experiment results
     """
-    return asyncio.run(run_experiment_async(
-        condition, complexity, verbose, skip_backtest, max_turns, run_number
-    ))
+    return asyncio.run(
+        run_experiment_async(
+            condition, complexity, verbose, skip_backtest, max_turns, run_number
+        )
+    )
 
 
 # =============================================================================
 # VERIFY-ONLY MODE
 # =============================================================================
+
 
 def run_verify_only(
     condition: str,
@@ -848,7 +1107,9 @@ def run_verify_only(
     code_file = exp_dir / "code.py"
 
     if verbose:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Verifying existing code: {code_file}")
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Verifying existing code: {code_file}"
+        )
         print(f"  Condition: {condition}, Complexity: {complexity}, Run: #{run_number}")
 
     if not code_file.exists():
@@ -896,17 +1157,29 @@ def run_verify_only(
             "results": {
                 k: {"passed": v.passed, "errors": v.errors}
                 for k, v in verify_results.items()
-            } if verify_results else {},
+            }
+            if verify_results
+            else {},
         },
         "backtest": {
             "success": backtest_result.success if backtest_result else False,
             "error": backtest_result.error if backtest_result else "Skipped",
             "metrics": {
-                "total_return": backtest_result.total_return if backtest_result else None,
-                "sharpe_ratio": backtest_result.sharpe_ratio if backtest_result else None,
-                "max_drawdown": backtest_result.max_drawdown if backtest_result else None,
-                "total_trades": backtest_result.total_trades if backtest_result else None,
-            } if backtest_result else {},
+                "total_return": backtest_result.total_return
+                if backtest_result
+                else None,
+                "sharpe_ratio": backtest_result.sharpe_ratio
+                if backtest_result
+                else None,
+                "max_drawdown": backtest_result.max_drawdown
+                if backtest_result
+                else None,
+                "total_trades": backtest_result.total_trades
+                if backtest_result
+                else None,
+            }
+            if backtest_result
+            else {},
         },
     }
 
@@ -917,8 +1190,11 @@ def run_verify_only(
 
     # Print summary
     if verbose:
-        status = "PASSED" if (verification_success and
-                             all(r.passed for r in verify_results.values())) else "FAILED"
+        status = (
+            "PASSED"
+            if (verification_success and all(r.passed for r in verify_results.values()))
+            else "FAILED"
+        )
         print(f"  Result: {status}")
         if verify_results:
             for name, res in verify_results.items():
@@ -927,7 +1203,11 @@ def run_verify_only(
                     for err in res.errors:
                         print(f"      - {err}")
         if backtest_result and backtest_result.success:
-            print(f"    backtest: PASS (return={backtest_result.total_return:.2%}, sharpe={backtest_result.sharpe_ratio:.2f})" if backtest_result.total_return else "    backtest: PASS")
+            print(
+                f"    backtest: PASS (return={backtest_result.total_return:.2%}, sharpe={backtest_result.sharpe_ratio:.2f})"
+                if backtest_result.total_return
+                else "    backtest: PASS"
+            )
         elif backtest_result:
             print(f"    backtest: FAIL ({backtest_result.error})")
         print()
@@ -965,6 +1245,7 @@ def find_latest_code_file(condition: str, complexity: str) -> Optional[Path]:
 # BACKTEST-ONLY MODE
 # =============================================================================
 
+
 def run_backtest_only(
     condition: str,
     complexity: str,
@@ -988,7 +1269,9 @@ def run_backtest_only(
     code_file = exp_dir / "code.py"
 
     if verbose:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Running backtest on: {code_file}")
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Running backtest on: {code_file}"
+        )
         print(f"  Condition: {condition}, Complexity: {complexity}, Run: #{run_number}")
 
     if not code_file.exists():
@@ -1018,11 +1301,21 @@ def run_backtest_only(
             "success": backtest_result.success if backtest_result else False,
             "error": backtest_result.error if backtest_result else "Unknown error",
             "metrics": {
-                "total_return": backtest_result.total_return if backtest_result else None,
-                "sharpe_ratio": backtest_result.sharpe_ratio if backtest_result else None,
-                "max_drawdown": backtest_result.max_drawdown if backtest_result else None,
-                "total_trades": backtest_result.total_trades if backtest_result else None,
-            } if backtest_result else {},
+                "total_return": backtest_result.total_return
+                if backtest_result
+                else None,
+                "sharpe_ratio": backtest_result.sharpe_ratio
+                if backtest_result
+                else None,
+                "max_drawdown": backtest_result.max_drawdown
+                if backtest_result
+                else None,
+                "total_trades": backtest_result.total_trades
+                if backtest_result
+                else None,
+            }
+            if backtest_result
+            else {},
         },
     }
 
@@ -1055,6 +1348,7 @@ def run_backtest_only(
 # =============================================================================
 # CLI INTERFACE
 # =============================================================================
+
 
 def main():
     """CLI entry point."""
@@ -1091,8 +1385,8 @@ def main():
         "--run-number",
         type=int,
         help="Run number to use. For normal runs, overrides auto-increment. "
-             "For --verify-only or --backtest-only, specifies which run to use "
-             "(defaults to most recent if not specified).",
+        "For --verify-only or --backtest-only, specifies which run to use "
+        "(defaults to most recent if not specified).",
     )
     parser.add_argument(
         "--skip-backtest",
@@ -1102,8 +1396,8 @@ def main():
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=10,
-        help="Maximum number of generation turns for agentic refinement (default: 10)",
+        default=20,
+        help="Maximum number of generation turns for agentic refinement (default: 20)",
     )
 
     args = parser.parse_args()
@@ -1120,14 +1414,18 @@ def main():
             # Verify the run exists
             exp_dir = get_experiment_dir(args.condition, args.complexity, run_number)
             if not (exp_dir / "code.py").exists():
-                print(f"Error: Run #{run_number} does not exist for {args.condition}/{args.complexity}")
+                print(
+                    f"Error: Run #{run_number} does not exist for {args.condition}/{args.complexity}"
+                )
                 print(f"  Expected: {exp_dir / 'code.py'}")
                 sys.exit(1)
         else:
             # Find the latest run
             code_file = find_latest_code_file(args.condition, args.complexity)
             if not code_file:
-                print(f"Error: No existing runs found for {args.condition}/{args.complexity}")
+                print(
+                    f"Error: No existing runs found for {args.condition}/{args.complexity}"
+                )
                 print(f"  Looked in: {RESULTS_DIR}")
                 sys.exit(1)
             run_number = extract_run_number_from_path(code_file.parent)
@@ -1149,14 +1447,18 @@ def main():
             # Verify the run exists
             exp_dir = get_experiment_dir(args.condition, args.complexity, run_number)
             if not (exp_dir / "code.py").exists():
-                print(f"Error: Run #{run_number} does not exist for {args.condition}/{args.complexity}")
+                print(
+                    f"Error: Run #{run_number} does not exist for {args.condition}/{args.complexity}"
+                )
                 print(f"  Expected: {exp_dir / 'code.py'}")
                 sys.exit(1)
         else:
             # Find the latest run
             code_file = find_latest_code_file(args.condition, args.complexity)
             if not code_file:
-                print(f"Error: No existing runs found for {args.condition}/{args.complexity}")
+                print(
+                    f"Error: No existing runs found for {args.condition}/{args.complexity}"
+                )
                 print(f"  Looked in: {RESULTS_DIR}")
                 sys.exit(1)
             run_number = extract_run_number_from_path(code_file.parent)

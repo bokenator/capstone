@@ -24,12 +24,7 @@ from .schema import (
 )
 
 from .vas import (
-    # AST helpers
-    APICallVisitor,
-    extract_api_calls,
-    # Validation logic
-    validate_api_calls,
-    # Verification functions
+    # Verification functions (passthrough for RAG-based grounding)
     verify_vas_simple,
     verify_vas_medium,
     verify_vas_complex,
@@ -73,10 +68,7 @@ __all__ = [
     "verify_schema_complex",
     "VERIFY_SCHEMA_FUNCTIONS",
     "DEFAULT_SCHEMAS",
-    # VAS validation
-    "APICallVisitor",
-    "extract_api_calls",
-    "validate_api_calls",
+    # VAS validation (passthrough for RAG)
     "verify_vas_simple",
     "verify_vas_medium",
     "verify_vas_complex",

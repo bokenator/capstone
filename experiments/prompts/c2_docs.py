@@ -4,9 +4,8 @@ C2: Documentation-Grounded Condition Prompts
 S=off, D=on, T=off
 
 Adds to control:
-- API citations required for third-party library calls
-- Must use module-qualified API calls (e.g., pd.Series.rolling, not .rolling)
-- VAS (Verified API Surface) verification
+- RAG-based documentation grounding via OpenSearch
+- Agent searches official docs to verify APIs before using them
 - No schema constraints, no tests
 """
 
@@ -14,7 +13,7 @@ from .shared import (
     STRATEGY_BASE_SIMPLE,
     STRATEGY_BASE_MEDIUM,
     STRATEGY_BASE_COMPLEX,
-    VAS_DESCRIPTION,
+    RAG_DESCRIPTION,
     API_CITATION_SIMPLE,
     API_CITATION_MEDIUM,
     API_CITATION_COMPLEX,
@@ -33,12 +32,12 @@ from .shared import (
 
 STRATEGY_1_SIMPLE = (
     STRATEGY_BASE_SIMPLE
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_SIMPLE
     + VALIDATION_VAS
     + OUTPUT_SIMPLE
     + ALLOWED_LIBS_SIMPLE
-    + "\nGenerate the complete implementation using only VAS-approved APIs.\n"
+    + "\nGenerate the complete implementation. Search the documentation to verify each API before using it.\n"
 )
 
 # =============================================================================
@@ -47,12 +46,12 @@ STRATEGY_1_SIMPLE = (
 
 STRATEGY_2_MEDIUM = (
     STRATEGY_BASE_MEDIUM
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_MEDIUM
     + VALIDATION_VAS
     + OUTPUT_MEDIUM
     + ALLOWED_LIBS_MEDIUM
-    + "\nGenerate the complete implementation using only VAS-approved APIs.\n"
+    + "\nGenerate the complete implementation. Search the documentation to verify each API before using it.\n"
 )
 
 # =============================================================================
@@ -61,12 +60,12 @@ STRATEGY_2_MEDIUM = (
 
 STRATEGY_3_COMPLEX = (
     STRATEGY_BASE_COMPLEX
-    + VAS_DESCRIPTION
+    + RAG_DESCRIPTION
     + API_CITATION_COMPLEX
     + VALIDATION_VAS
     + OUTPUT_COMPLEX
     + ALLOWED_LIBS_COMPLEX
-    + "\nGenerate the complete implementation using only VAS-approved APIs.\n"
+    + "\nGenerate the complete implementation. Search the documentation to verify each API before using it.\n"
 )
 
 # =============================================================================

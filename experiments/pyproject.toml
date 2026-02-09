@@ -11,10 +11,16 @@ dependencies = [
     "scipy>=1.17.0",
     "ta>=0.11.0",
     "vectorbt>=0.28.2",
+    "opensearch-py>=2.4.0",
+    "requests-aws4auth>=1.2.0",
+    "beautifulsoup4>=4.12.0",
+    "sphobjinv>=2.3.0",
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]
 run-experiment = "run_experiment:main"
+build-rag = "build_rag:main"
 
 [dependency-groups]
 dev = [
@@ -31,4 +37,4 @@ where = ["."]
 include = ["backtests", "backtests.*", "common", "common.*", "prompts", "prompts.*", "verify", "verify.*"]
 
 [tool.setuptools]
-py-modules = ["run_experiment"]
+py-modules = ["run_experiment", "build_rag"]

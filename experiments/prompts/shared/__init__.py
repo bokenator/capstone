@@ -6,7 +6,7 @@ Common components used across multiple experimental conditions.
 """
 
 from .invariant_tests import INVARIANT_TESTS
-from .vas import VAS_DESCRIPTION, VAS_SET
+from .vas import RAG_DESCRIPTION
 from .schemas import (
     DATA_SCHEMA_SIMPLE,
     DATA_SCHEMA_MEDIUM,
@@ -60,9 +60,8 @@ from .validation import (
 __all__ = [
     # Invariant tests
     "INVARIANT_TESTS",
-    # VAS
-    "VAS_DESCRIPTION",
-    "VAS_SET",
+    # RAG Documentation Grounding
+    "RAG_DESCRIPTION",
     # Schemas (dict form)
     "DATA_SCHEMA_SIMPLE",
     "DATA_SCHEMA_MEDIUM",

@@ -59,23 +59,26 @@ def generate_signals(
     in_position = False
 
     for i in range(n):
-        rsi_val = rsi.iloc[i]
+        rsi_curr = rsi.iloc[i]
+        rsi_prev = rsi.iloc[i - 1] if i > 0 else np.nan
 
-        if np.isnan(rsi_val):
-            # During warmup period, stay flat
-            position.iloc[i] = 0.0
+        # Skip if current RSI not available
+        if np.isnan(rsi_curr):
+            position.iloc[i] = 1.0 if in_position else 0.0
             continue
 
         if not in_position:
-            # Check for entry: RSI below oversold
-            if rsi_val < oversold:
+            # Check for entry: RSI CROSSES below oversold
+            # Crossing means: previous >= threshold AND current < threshold
+            if not np.isnan(rsi_prev) and rsi_prev >= oversold and rsi_curr < oversold:
                 in_position = True
                 position.iloc[i] = 1.0
             else:
                 position.iloc[i] = 0.0
         else:
-            # Check for exit: RSI above overbought
-            if rsi_val > overbought:
+            # Check for exit: RSI CROSSES above overbought
+            # Crossing means: previous <= threshold AND current > threshold
+            if not np.isnan(rsi_prev) and rsi_prev <= overbought and rsi_curr > overbought:
                 in_position = False
                 position.iloc[i] = 0.0
             else:

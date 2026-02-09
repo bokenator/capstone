@@ -41,14 +41,14 @@ PARAM_SCHEMA_SIMPLE = {
         "default": 30.0,
         "min": 0.0,
         "max": 50.0,
-        "description": "RSI threshold for entry (oversold)",
+        "description": "RSI level - enter long when RSI CROSSES BELOW this value",
     },
     "overbought": {
         "type": "float",
         "default": 70.0,
         "min": 50.0,
         "max": 100.0,
-        "description": "RSI threshold for exit (overbought)",
+        "description": "RSI level - exit long when RSI CROSSES ABOVE this value",
     },
 }
 
@@ -89,14 +89,14 @@ PARAM_SCHEMA_SIMPLE_STR = """
     "default": 30.0,
     "min": 0.0,
     "max": 50.0,
-    "description": "RSI threshold for entry (oversold)"
+    "description": "RSI level - enter long when RSI CROSSES BELOW this value"
   },
   "overbought": {
     "type": "float",
     "default": 70.0,
     "min": 50.0,
     "max": 100.0,
-    "description": "RSI threshold for exit (overbought)"
+    "description": "RSI level - exit long when RSI CROSSES ABOVE this value"
   }
 }
 ```

@@ -1,0 +1,46 @@
+{
+  "condition": "c0",
+  "complexity": "complex",
+  "run_number": 2,
+  "prompt_name": "Pairs Trading",
+  "prompt_interface": "from_order_func(flexible=True)",
+  "max_turns": 10,
+  "submissions": 1,
+  "total_tokens": {
+    "input_tokens": 17076,
+    "output_tokens": 11924,
+    "total_tokens": 29000
+  },
+  "generation": {
+    "success": true,
+    "error": null
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": true,
+    "error": null,
+    "metrics": {
+      "total_return": 1.1409604818531102e+26,
+      "sharpe_ratio": -1.4302084771998405,
+      "max_drawdown": 12859.444108972393,
+      "total_trades": 2
+    }
+  }
+}

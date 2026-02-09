@@ -375,10 +375,12 @@ def verify_tests_complex(
 
     asset_a, asset_b = test_data
 
-    # For complex strategy, we test compute_spread_indicators with both assets
+    # For complex strategy, we test compute_spread_indicators with both assets.
+    # The wrapper must truncate asset_b to match whenever the test harness
+    # truncates asset_a (e.g., in the no-lookahead test).
     def generate_func(data: "pd.DataFrame"):
-        # Use asset_a as the primary data, asset_b from test_data
-        indicators = generated_module.compute_spread_indicators(data, asset_b)
+        b = asset_b.iloc[:len(data)]
+        indicators = generated_module.compute_spread_indicators(data, b)
         return pd.Series(indicators.get("zscore", np.zeros(len(data))), index=data.index)
 
     run_invariant_tests(

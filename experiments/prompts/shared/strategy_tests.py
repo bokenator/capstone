@@ -9,29 +9,43 @@ Used by: C3 (TDD), C5 (Schema+TDD), C6 (Docs+TDD), C7 (All)
 STRATEGY_TESTS_SIMPLE = """
 ## Strategy-Specific Tests
 
-Your code must also pass these strategy-specific tests:
+Your code must also pass these strategy-specific tests.
+
+**IMPORTANT:** The function signature is:
+```python
+def generate_signals(data: dict, params: dict) -> dict:
+    # data["ohlcv"] is a DataFrame with 'close' column
+    # params contains 'rsi_period', 'oversold', 'overbought'
+    # Returns {"ohlcv": position_series} where position_series has values 0 (flat) or 1 (long)
+```
 
 ### Test 1: Entry Signal on Oversold
 ```python
 def test_entry_on_oversold(generate_signals):
-    \"\"\"Must generate entry when RSI crosses below 30.\"\"\"
+    \"\"\"Must generate entry when RSI crosses below oversold threshold.\"\"\"
     # Create synthetic data where RSI will cross below 30
-    prices = create_declining_prices(n=100, start=100, end=70)
-    entries, exits = generate_signals(prices)
+    data = {"ohlcv": pd.DataFrame({"close": create_declining_prices(n=100, start=100, end=70)})}
+    params = {"rsi_period": 14, "oversold": 30.0, "overbought": 70.0}
+    result = generate_signals(data, params)
+    position = result["ohlcv"]
 
-    # Must have at least one entry signal
+    # Check for entry: position goes from 0 to 1
+    entries = (position.diff() > 0) & (position == 1)
     assert entries.any(), "No entry signal generated on oversold condition"
 ```
 
 ### Test 2: Exit Signal on Overbought
 ```python
 def test_exit_on_overbought(generate_signals):
-    \"\"\"Must generate exit when RSI crosses above 70.\"\"\"
+    \"\"\"Must generate exit when RSI crosses above overbought threshold.\"\"\"
     # Create synthetic data where RSI will cross above 70
-    prices = create_rising_prices(n=100, start=100, end=150)
-    entries, exits = generate_signals(prices)
+    data = {"ohlcv": pd.DataFrame({"close": create_rising_prices(n=100, start=100, end=150)})}
+    params = {"rsi_period": 14, "oversold": 30.0, "overbought": 70.0}
+    result = generate_signals(data, params)
+    position = result["ohlcv"]
 
-    # Must have at least one exit signal
+    # Check for exit: position goes from 1 to 0
+    exits = (position.diff() < 0) & (position == 0)
     assert exits.any(), "No exit signal generated on overbought condition"
 ```
 
@@ -39,17 +53,21 @@ def test_exit_on_overbought(generate_signals):
 ```python
 def test_no_double_entry(generate_signals):
     \"\"\"Should not signal entry when already in position.\"\"\"
-    prices = create_volatile_prices(n=200)
-    entries, exits = generate_signals(prices)
+    data = {"ohlcv": pd.DataFrame({"close": create_volatile_prices(n=200)})}
+    params = {"rsi_period": 14, "oversold": 30.0, "overbought": 70.0}
+    result = generate_signals(data, params)
+    position = result["ohlcv"]
 
-    # Check that we don't have consecutive entries without an exit
-    in_position = False
-    for i in range(len(entries)):
-        if entries.iloc[i]:
-            assert not in_position, "Entry signal while already in position"
-            in_position = True
-        if exits.iloc[i]:
-            in_position = False
+    # Position should only be 0 or 1, with transitions being clean
+    # Entry (0->1) should only happen when flat, exit (1->0) when long
+    assert position.isin([0, 1]).all(), "Position must be 0 or 1"
+
+    # Check no consecutive entries without exit
+    diff = position.diff().fillna(0)
+    # diff > 0 means entry, diff < 0 means exit
+    # Should never have two entries in a row
+    entries = (diff > 0).astype(int)
+    assert (entries.rolling(2).sum() <= 1).all(), "Double entry detected"
 ```
 """
 

@@ -98,6 +98,7 @@ def order_func(
     entry_threshold: float,
     exit_threshold: float,
     stop_threshold: float,
+    notional_per_leg: float = 10000.0,
 ) -> tuple:
     """
     Generate orders for pairs trading. Called by vectorbt's from_order_func.
@@ -130,8 +131,9 @@ def order_func(
     col = c.col  # 0 = Asset A, 1 = Asset B
     pos = c.position_now
 
-    # Current values
+    # Current and previous values
     z = zscore[i]
+    z_prev = zscore[i - 1] if i > 0 else np.nan
     hr = hedge_ratio[i]
     price_a = close_a[i]
     price_b = close_b[i]
@@ -152,10 +154,9 @@ def order_func(
 
     position_type = _state["position_type"]
 
-    # Calculate target shares based on notional ($10,000 per leg)
-    notional = 10000.0
-    shares_a = notional / price_a
-    shares_b = (notional / price_b) * abs(hr)
+    # Calculate target shares based on notional per leg
+    shares_a = notional_per_leg / price_a
+    shares_b = (notional_per_leg / price_b) * abs(hr)
 
     # Entry logic: no position
     if position_type == 0:
@@ -181,13 +182,19 @@ def order_func(
     else:
         should_exit = False
 
-        # Exit condition 1: Z-score crosses exit_threshold (mean reversion complete)
-        if position_type == -1 and z <= exit_threshold:
-            # Was short spread, z-score reverted to normal
-            should_exit = True
-        elif position_type == 1 and z >= exit_threshold:
-            # Was long spread, z-score reverted to normal
-            should_exit = True
+        # Exit condition 1: Z-score CROSSES exit_threshold (mean reversion complete)
+        # Crossing means transition from one side to the other
+        if not np.isnan(z_prev):
+            if position_type == -1:
+                # Was short spread (entered when z > entry), expect z to come down
+                # Exit when z crosses DOWN through exit_threshold (prev > threshold AND curr <= threshold)
+                if z_prev > exit_threshold and z <= exit_threshold:
+                    should_exit = True
+            elif position_type == 1:
+                # Was long spread (entered when z < -entry), expect z to come up
+                # Exit when z crosses UP through exit_threshold (prev < threshold AND curr >= threshold)
+                if z_prev < exit_threshold and z >= exit_threshold:
+                    should_exit = True
 
         # Exit condition 2: Stop-loss (z-score went further against us)
         if abs(z) > stop_threshold:

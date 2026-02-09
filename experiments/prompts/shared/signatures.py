@@ -27,12 +27,12 @@ def generate_signals(
               Must contain 'ohlcv' key with DataFrame having 'close' column.
         params: Strategy parameters dict with keys:
               - rsi_period (int): RSI calculation period
-              - oversold (float): RSI threshold for entry (go long)
-              - overbought (float): RSI threshold for exit (go flat)
+              - oversold (float): RSI level that triggers entry when RSI CROSSES BELOW it
+              - overbought (float): RSI level that triggers exit when RSI CROSSES ABOVE it
 
     Returns:
         Dict mapping slot names to position Series.
-        Position values: +1 (long), 0 (flat), -1 (short)
+        This is a LONG-ONLY strategy, so position values are: 1 (long) or 0 (flat).
         Example: {"ohlcv": pd.Series([0, 0, 1, 1, 0, ...], index=...)}
 
     Usage with vectorbt:
@@ -161,8 +161,8 @@ def order_func(
     c,
     close_a: np.ndarray,
     close_b: np.ndarray,
-    hedge_ratio: np.ndarray,
     zscore: np.ndarray,
+    hedge_ratio: np.ndarray,
     entry_threshold: float,
     exit_threshold: float,
     stop_threshold: float,
@@ -181,8 +181,8 @@ def order_func(
            - c.cash_now: current cash balance (float)
         close_a: Close prices for Asset A
         close_b: Close prices for Asset B
-        hedge_ratio: Rolling hedge ratio array
         zscore: Z-score of spread array
+        hedge_ratio: Rolling hedge ratio array
         entry_threshold: Z-score level to enter (e.g., 2.0)
         exit_threshold: Z-score level to exit (e.g., 0.0)
         stop_threshold: Z-score level for stop-loss (e.g., 3.0)

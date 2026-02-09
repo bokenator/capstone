@@ -28,58 +28,62 @@ def _wrap_flex_order_func(user_order_func: Callable, close_a: np.ndarray, close_
     """
     Wrap user's order function for flexible multi-asset mode.
 
-    In flexible mode, vectorbt calls the function once per bar and expects
-    (col, Order) or NoOrder to be returned. We call user's function twice
-    (once for each asset) and return orders for both.
+    In flexible mode, vectorbt calls the function repeatedly for each bar until
+    we return NoOrder. We track which columns have already been processed for
+    the current bar and return orders one at a time, then NoOrder when done.
 
     User function signature: order_func(c, close_a, close_b, ...) -> (size, size_type, direction)
     where c.col indicates which asset (0 or 1)
     """
+    # Track state: which bar we're on and which columns we've processed
+    state = {"last_bar": -1, "pending_orders": []}
+
     def wrapped_flex_order_func(c, close_a, close_b, zscore, hedge_ratio,
-                                entry_threshold, exit_threshold, stop_threshold):
+                                entry_threshold, exit_threshold, stop_threshold, notional_per_leg):
         i = c.i
 
-        # FlexOrderContext has different attributes than regular OrderContext
-        # Try to get cash, default to 100000 if not available
-        cash = getattr(c, 'cash_now', getattr(c, 'value_now', 100000.0))
+        # If we're on a new bar, compute orders for all columns
+        if i != state["last_bar"]:
+            state["last_bar"] = i
+            state["pending_orders"] = []
 
-        # Get positions for both assets from last_position array
-        last_pos = getattr(c, 'last_position', np.zeros(num_cols))
-        pos_a = last_pos[0] if len(last_pos) > 0 else 0.0
-        pos_b = last_pos[1] if len(last_pos) > 1 else 0.0
+            # FlexOrderContext has different attributes than regular OrderContext
+            cash = getattr(c, 'cash_now', getattr(c, 'value_now', 100000.0))
 
-        orders = []
+            # Get positions for both assets from last_position array
+            last_pos = getattr(c, 'last_position', np.zeros(num_cols))
+            pos_a = last_pos[0] if len(last_pos) > 0 else 0.0
+            pos_b = last_pos[1] if len(last_pos) > 1 else 0.0
 
-        # Call user function for each asset
-        for col in range(num_cols):
-            pos = pos_a if col == 0 else pos_b
-            # Create simulated context with col attribute
-            sim_ctx = _FlexOrderContext(i=i, col=col, position_now=pos, cash_now=cash)
+            # Call user function for each asset
+            for col in range(num_cols):
+                pos = pos_a if col == 0 else pos_b
+                sim_ctx = _FlexOrderContext(i=i, col=col, position_now=pos, cash_now=cash)
 
-            result = user_order_func(
-                sim_ctx, close_a, close_b, zscore, hedge_ratio,
-                entry_threshold, exit_threshold, stop_threshold
-            )
+                result = user_order_func(
+                    sim_ctx, close_a, close_b, zscore, hedge_ratio,
+                    entry_threshold, exit_threshold, stop_threshold, notional_per_leg
+                )
 
-            # Convert tuple to Order
-            if isinstance(result, tuple) and len(result) >= 3:
-                size, size_type, direction = result[0], result[1], result[2]
+                # Convert tuple to Order
+                if isinstance(result, tuple) and len(result) >= 3:
+                    size, size_type, direction = result[0], result[1], result[2]
 
-                if not np.isnan(size):
-                    price = close_a[i] if col == 0 else close_b[i]
-                    order = vbt.portfolio.nb.order_nb(
-                        size=float(size),
-                        price=float(price),
-                        size_type=int(size_type),
-                        direction=int(direction),
-                    )
-                    orders.append((col, order))
+                    if not np.isnan(size):
+                        price = close_a[i] if col == 0 else close_b[i]
+                        order = vbt.portfolio.nb.order_nb(
+                            size=float(size),
+                            price=float(price),
+                            size_type=int(size_type),
+                            direction=int(direction),
+                        )
+                        state["pending_orders"].append((col, order))
 
-        # Return first non-empty order, or NoOrder
-        if orders:
-            return orders[0]
+        # Return next pending order, or NoOrder if none left
+        if state["pending_orders"]:
+            return state["pending_orders"].pop(0)
 
-        # Return NoOrder
+        # Return NoOrder - this tells vectorbt to advance to next bar
         return (-1, vbt.portfolio.nb.order_nb(size=np.nan, price=np.nan, size_type=0, direction=0))
 
     return wrapped_flex_order_func
@@ -155,10 +159,11 @@ def run_backtest(
         result.error = f"compute_spread_indicators missing key: {e}"
         return result
 
-    # Get trading thresholds
+    # Get trading thresholds and sizing
     entry_threshold = params.get("entry_threshold", 2.0)
     exit_threshold = params.get("exit_threshold", 0.0)
     stop_threshold = params.get("stop_threshold", 3.0)
+    notional_per_leg = params.get("notional_per_leg", 10000.0)
 
     # Create combined close DataFrame for vectorbt
     close_df = pd.DataFrame({
@@ -174,7 +179,7 @@ def run_backtest(
         pf = vbt.Portfolio.from_order_func(
             close_df,
             wrapped_order_func,
-            close_a, close_b, zscore, hedge_ratio, entry_threshold, exit_threshold, stop_threshold,
+            close_a, close_b, zscore, hedge_ratio, entry_threshold, exit_threshold, stop_threshold, notional_per_leg,
             init_cash=initial_capital,
             freq="D",
             flexible=True,

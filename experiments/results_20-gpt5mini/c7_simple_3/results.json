@@ -1,0 +1,46 @@
+{
+  "condition": "c7",
+  "complexity": "simple",
+  "run_number": 3,
+  "prompt_name": "RSI Mean Reversion",
+  "prompt_interface": "from_signals",
+  "max_turns": 20,
+  "submissions": 1,
+  "total_tokens": {
+    "input_tokens": 14463,
+    "output_tokens": 7278,
+    "total_tokens": 21741
+  },
+  "generation": {
+    "success": true,
+    "error": null
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": true,
+    "error": null,
+    "metrics": {
+      "total_return": 0.1054244167724828,
+      "sharpe_ratio": 0.42110913451014975,
+      "max_drawdown": 0.1993457211384538,
+      "total_trades": 3
+    }
+  }
+}

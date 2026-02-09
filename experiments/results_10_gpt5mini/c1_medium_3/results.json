@@ -1,0 +1,46 @@
+{
+  "condition": "c1",
+  "complexity": "medium",
+  "run_number": 3,
+  "prompt_name": "MACD + ATR Trailing Stop",
+  "prompt_interface": "from_order_func(flexible=False)",
+  "max_turns": 10,
+  "submissions": 1,
+  "total_tokens": {
+    "input_tokens": 16798,
+    "output_tokens": 9506,
+    "total_tokens": 26304
+  },
+  "generation": {
+    "success": true,
+    "error": null
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": true,
+    "error": null,
+    "metrics": {
+      "total_return": 1.0063151002999028e+58,
+      "sharpe_ratio": 0.7988569390103404,
+      "max_drawdown": 748.8472198485989,
+      "total_trades": 1
+    }
+  }
+}
