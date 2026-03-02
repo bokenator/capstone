@@ -1,0 +1,46 @@
+{
+  "condition": "c6",
+  "complexity": "complex",
+  "run_number": 4,
+  "prompt_name": "Pairs Trading",
+  "prompt_interface": "from_order_func(flexible=True)",
+  "max_turns": 10,
+  "submissions": 2,
+  "total_tokens": {
+    "input_tokens": 147359,
+    "output_tokens": 20882,
+    "total_tokens": 168241
+  },
+  "generation": {
+    "success": true,
+    "error": "Max turns (10) exceeded"
+  },
+  "verification": {
+    "success": true,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": true,
+        "errors": []
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": false,
+    "error": "Portfolio.from_order_func failed: position is negative but order.direction is Direction.LongOnly\nTraceback (most recent call last):\n  File \"/root/wqu/capstone/w6/experiments_imp_2/backtests/complex.py\", line 179, in run_backtest\n    pf = vbt.Portfolio.from_order_func(\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w6/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/base.py\", line 3883, in from_order_func\n    order_records, log_records = simulate_func(\n                                 ^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w6/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/nb.py\", line 4371, in flex_simulate_nb\n    order_result, new_state = process_order_nb(\n                              ^^^^^^^^^^^^^^^^^\n  File \"/root/wqu/capstone/w6/experiments_imp_2/.venv/lib/python3.12/site-packages/vectorbt/portfolio/nb.py\", line 431, in execute_order_nb\n    raise ValueError(\"position is negative but order.direction is Direction.LongOnly\")\nValueError: position is negative but order.direction is Direction.LongOnly\n",
+    "metrics": {
+      "total_return": null,
+      "sharpe_ratio": null,
+      "max_drawdown": null,
+      "total_trades": null
+    }
+  }
+}

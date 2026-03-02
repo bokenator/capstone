@@ -1,0 +1,43 @@
+{
+  "condition": "c4",
+  "complexity": "medium",
+  "run_number": 7,
+  "prompt_name": "MACD + ATR Trailing Stop",
+  "prompt_interface": "from_order_func(flexible=False)",
+  "max_turns": 10,
+  "submissions": 1,
+  "total_tokens": {
+    "input_tokens": 130225,
+    "output_tokens": 6754,
+    "total_tokens": 136979
+  },
+  "generation": {
+    "success": true,
+    "error": "Max turns (10) exceeded"
+  },
+  "verification": {
+    "success": false,
+    "error": null,
+    "results": {
+      "schema": {
+        "passed": false,
+        "errors": [
+          "Undeclared column access: 'init_i' not in DATA_SCHEMA"
+        ]
+      },
+      "documentation": {
+        "passed": true,
+        "errors": []
+      },
+      "tests": {
+        "passed": true,
+        "errors": []
+      }
+    }
+  },
+  "backtest": {
+    "success": false,
+    "error": "No successful verification",
+    "metrics": {}
+  }
+}
